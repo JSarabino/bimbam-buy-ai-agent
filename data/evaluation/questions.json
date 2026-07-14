@@ -1,0 +1,10 @@
+[
+  {
+    "id": "Q001",
+    "question": "¿Cuánto tarda un envío a una zona extendida?",
+    "expected_document": "Guía de Tiempos y Costos de Envío",
+    "expected_answer_contains": [
+      "6 a 12 días hábiles"
+    ]
+  }
+]

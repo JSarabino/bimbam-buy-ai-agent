@@ -1,0 +1,52 @@
+# Control de versiones
+.git
+.gitignore
+.github/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# Variables privadas
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editores
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/
+
+# Pruebas
+tests/
+
+# Índice local generado
+storage/faiss_index/
+
+# Documentación que no necesita la aplicación
+docs/
+
+# Logs y temporales
+logs/
+*.log
+tmp/
+temp/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
