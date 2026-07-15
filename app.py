@@ -2,65 +2,192 @@
 
 from __future__ import annotations
 
-import os
+from collections import Counter
 from pathlib import Path
 
 import streamlit as st
-from dotenv import load_dotenv
+
+from bimbam_assistant.application.indexing_service import (
+    ChunkingError,
+    create_chunks,
+)
+from bimbam_assistant.core.config import (
+    ConfigurationError,
+    get_settings,
+)
+from bimbam_assistant.infrastructure.pdf_loader import (
+    PdfLoadingError,
+    find_pdf_files,
+    load_pdf_documents,
+)
 
 
-# Carga las variables del archivo .env cuando se ejecuta localmente.
-# En Docker u OCI también pueden proporcionarse como variables del sistema.
-load_dotenv()
+@st.cache_data(show_spinner=False)
+def build_processing_snapshot(
+    documents_path: str,
+    document_signature: tuple[tuple[str, int, int], ...],
+    chunk_size: int,
+    chunk_overlap: int,
+) -> dict[str, object]:
+    """Procesa el corpus y devuelve datos simples para la interfaz.
 
+    La firma de archivos forma parte de la clave de caché. Cuando un PDF
+    cambia de nombre, tamaño o fecha de modificación, Streamlit vuelve a
+    procesar el corpus automáticamente.
+    """
 
-def env_to_bool(value: str | None) -> bool:
-    """Determina si una variable contiene un valor útil."""
+    del document_signature
 
-    return bool(value and value.strip())
+    resolved_documents_path = Path(documents_path)
 
-
-def index_is_ready(index_path: Path) -> bool:
-    """Comprueba si existen los archivos principales de un índice FAISS."""
-
-    return (
-        (index_path / "index.faiss").is_file()
-        and (index_path / "index.pkl").is_file()
+    pages = load_pdf_documents(resolved_documents_path)
+    chunks = create_chunks(
+        pages,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
     )
+
+    pages_by_document = Counter(
+        str(page.metadata["document_name"])
+        for page in pages
+    )
+    chunks_by_document = Counter(
+        str(chunk.metadata["document_name"])
+        for chunk in chunks
+    )
+    category_by_document = {
+        str(page.metadata["document_name"]): str(page.metadata["category"])
+        for page in pages
+    }
+
+    details = [
+        {
+            "Documento": document_name,
+            "Categoría": category_by_document[document_name],
+            "Páginas": pages_by_document[document_name],
+            "Chunks": chunks_by_document[document_name],
+        }
+        for document_name in sorted(pages_by_document)
+    ]
+
+    chunk_ids = [
+        str(chunk.metadata.get("chunk_id", ""))
+        for chunk in chunks
+    ]
+
+    maximum_chunk_size = max(
+        (len(chunk.page_content) for chunk in chunks),
+        default=0,
+    )
+
+    validation_errors = {
+        "chunks_without_id": sum(not chunk_id for chunk_id in chunk_ids),
+        "duplicated_ids": len(chunk_ids) - len(set(chunk_ids)),
+        "chunks_without_source": sum(
+            not chunk.metadata.get("source")
+            for chunk in chunks
+        ),
+        "chunks_without_page": sum(
+            "page_number" not in chunk.metadata
+            for chunk in chunks
+        ),
+        "unclassified_chunks": sum(
+            chunk.metadata.get("category") == "sin_clasificar"
+            for chunk in chunks
+        ),
+        "oversized_chunks": sum(
+            len(chunk.page_content) > chunk_size
+            for chunk in chunks
+        ),
+    }
+
+    return {
+        "page_count": len(pages),
+        "chunk_count": len(chunks),
+        "empty_pages": sum(
+            bool(page.metadata.get("is_empty", False))
+            for page in pages
+        ),
+        "ocr_candidates": sum(
+            bool(page.metadata.get("ocr_candidate", False))
+            for page in pages
+        ),
+        "category_count": len(
+            {
+                str(chunk.metadata.get("category"))
+                for chunk in chunks
+            }
+        ),
+        "maximum_chunk_size": maximum_chunk_size,
+        "details": details,
+        "validation_errors": validation_errors,
+        "processing_ready": (
+            bool(chunks)
+            and not any(validation_errors.values())
+        ),
+    }
+
+
+def build_document_signature(
+    pdf_files: list[Path],
+) -> tuple[tuple[str, int, int], ...]:
+    """Construye una firma que permite invalidar la caché al cambiar un PDF."""
+
+    return tuple(
+        (
+            pdf_file.name,
+            pdf_file.stat().st_size,
+            pdf_file.stat().st_mtime_ns,
+        )
+        for pdf_file in pdf_files
+    )
+
+
+def render_sidebar() -> None:
+    """Muestra la configuración pública del proyecto."""
+
+    settings = get_settings()
+
+    with st.sidebar:
+        st.header("Configuración")
+
+        st.write(f"**Aplicación:** {settings.app_name}")
+        st.write(f"**Versión:** {settings.app_version}")
+        st.write(f"**Entorno:** {settings.app_environment}")
+
+        st.divider()
+
+        st.write(f"**Chunk size:** {settings.chunk_size}")
+        st.write(f"**Chunk overlap:** {settings.chunk_overlap}")
+        st.write(f"**Modelo:** {settings.gemini_chat_model}")
+        st.write(
+            f"**Embeddings:** {settings.gemini_embedding_model}"
+        )
+
+        st.divider()
+
+        st.caption(
+            "La clave de Gemini nunca se muestra en la interfaz."
+        )
 
 
 def main() -> None:
     """Renderiza la pantalla inicial de la aplicación."""
 
-    app_name = os.getenv("APP_NAME", "BimBam Assistant")
-    app_environment = os.getenv("APP_ENV", "development")
-    app_version = os.getenv("APP_VERSION", "0.1.0")
-
-    documents_path = Path(
-        os.getenv("DOCUMENTS_PATH", "data/documents")
-    )
-    faiss_index_path = Path(
-        os.getenv("FAISS_INDEX_PATH", "storage/faiss_index")
-    )
-
-    api_key_configured = env_to_bool(os.getenv("GOOGLE_API_KEY"))
-
-    pdf_files = (
-        sorted(documents_path.glob("*.pdf"))
-        if documents_path.is_dir()
-        else []
-    )
-
-    faiss_ready = index_is_ready(faiss_index_path)
+    try:
+        settings = get_settings()
+    except ConfigurationError as error:
+        st.error(f"Error de configuración: {error}")
+        return
 
     st.set_page_config(
-        page_title=app_name,
+        page_title=settings.app_name,
         page_icon="🛍️",
-        layout="centered",
+        layout="wide",
         initial_sidebar_state="expanded",
     )
 
-    st.title(f"🛍️ {app_name}")
+    st.title(f"🛍️ {settings.app_name}")
     st.caption(
         "Agente inteligente para consultar las políticas y los "
         "documentos corporativos de BimBam Buy."
@@ -68,72 +195,169 @@ def main() -> None:
 
     st.markdown(
         """
-        Esta versión inicial verifica que el entorno, los documentos y
-        la aplicación web estén correctamente configurados.
-
-        En las siguientes etapas incorporaremos:
-
-        - lectura y fragmentación de los PDF;
-        - embeddings con Gemini;
-        - almacenamiento vectorial con FAISS;
-        - recuperación semántica;
-        - generación de respuestas con fuentes;
-        - flujo del agente con LangGraph.
+        La preparación documental ya está implementada: los PDF se leen
+        página por página, se limpian, se clasifican y se dividen en
+        fragmentos trazables. La siguiente etapa incorporará embeddings
+        con Gemini y la persistencia del índice vectorial en FAISS.
         """
     )
 
-    st.subheader("Estado del proyecto")
+    render_sidebar()
 
-    column_api, column_documents, column_index = st.columns(3)
-
-    with column_api:
-        st.metric(
-            label="Gemini API",
-            value="Configurada" if api_key_configured else "Pendiente",
+    try:
+        pdf_files = find_pdf_files(
+            settings.require_documents_path()
         )
 
-    with column_documents:
+        document_signature = build_document_signature(pdf_files)
+
+        with st.spinner(
+            "Validando la lectura y fragmentación del corpus..."
+        ):
+            processing = build_processing_snapshot(
+                str(settings.documents_path),
+                document_signature,
+                settings.chunk_size,
+                settings.chunk_overlap,
+            )
+
+    except (
+        ConfigurationError,
+        PdfLoadingError,
+        ChunkingError,
+    ) as error:
+        st.error(
+            "No fue posible procesar el corpus documental: "
+            f"{error}"
+        )
+        return
+
+    st.subheader("Estado del proyecto")
+
+    document_column, page_column, chunk_column, index_column = st.columns(4)
+
+    with document_column:
         st.metric(
             label="Documentos PDF",
             value=len(pdf_files),
         )
 
-    with column_index:
+    with page_column:
+        st.metric(
+            label="Páginas procesadas",
+            value=int(processing["page_count"]),
+        )
+
+    with chunk_column:
+        st.metric(
+            label="Chunks generados",
+            value=int(processing["chunk_count"]),
+        )
+
+    with index_column:
         st.metric(
             label="Índice FAISS",
-            value="Disponible" if faiss_ready else "Pendiente",
+            value=(
+                "Disponible"
+                if settings.faiss_index_exists
+                else "Pendiente"
+            ),
         )
 
-    if not api_key_configured:
-        st.warning(
-            "La variable GOOGLE_API_KEY todavía no está configurada. "
-            "Agrégala al archivo .env para conectar la aplicación con Gemini."
-        )
-
-    if not documents_path.is_dir():
-        st.warning(
-            f"No se encontró la carpeta de documentos: "
-            f"`{documents_path.as_posix()}`."
-        )
-    elif not pdf_files:
-        st.warning(
-            f"No se encontraron archivos PDF en "
-            f"`{documents_path.as_posix()}`."
+    if bool(processing["processing_ready"]):
+        st.success(
+            "La lectura, limpieza, clasificación y fragmentación "
+            "del corpus finalizaron correctamente."
         )
     else:
-        st.success(
-            f"Se encontraron {len(pdf_files)} documentos PDF."
+        st.warning(
+            "El procesamiento terminó, pero existen validaciones "
+            "que deben revisarse antes de generar embeddings."
         )
 
-        with st.expander("Ver documentos detectados"):
-            for pdf_file in pdf_files:
-                st.write(f"• {pdf_file.name}")
-
-    if not faiss_ready:
+    if not settings.google_api_key_configured:
+        st.warning(
+            "GOOGLE_API_KEY no está configurada. La preparación "
+            "documental funciona sin ella, pero será necesaria para "
+            "generar embeddings y respuestas."
+        )
+    else:
         st.info(
-            "El índice FAISS todavía no ha sido generado. "
-            "Esto es normal en la configuración inicial."
+            "La clave de Gemini está configurada. Todavía no se utiliza "
+            "durante la lectura y fragmentación de los PDF."
         )
+
+    if not settings.faiss_index_exists:
+        st.info(
+            "El índice FAISS aún no ha sido generado. La siguiente "
+            "etapa convertirá los chunks en embeddings y persistirá "
+            "el índice en storage/faiss_index/."
+        )
+
+    st.subheader("Resumen del procesamiento")
+
+    empty_column, ocr_column, category_column, size_column = st.columns(4)
+
+    with empty_column:
+        st.metric(
+            label="Páginas vacías",
+            value=int(processing["empty_pages"]),
+        )
+
+    with ocr_column:
+        st.metric(
+            label="Candidatas a OCR",
+            value=int(processing["ocr_candidates"]),
+        )
+
+    with category_column:
+        st.metric(
+            label="Categorías",
+            value=int(processing["category_count"]),
+        )
+
+    with size_column:
+        st.metric(
+            label="Chunk máximo",
+            value=f"{int(processing['maximum_chunk_size'])} caracteres",
+        )
+
+    with st.expander("Ver detalle por documento", expanded=True):
+        st.dataframe(
+            processing["details"],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    validation_errors = processing["validation_errors"]
+
+    with st.expander("Ver validaciones técnicas"):
+        st.write(
+            {
+                "Chunks sin identificador": validation_errors[
+                    "chunks_without_id"
+                ],
+                "Identificadores duplicados": validation_errors[
+                    "duplicated_ids"
+                ],
+                "Chunks sin fuente": validation_errors[
+                    "chunks_without_source"
+                ],
+                "Chunks sin página": validation_errors[
+                    "chunks_without_page"
+                ],
+                "Chunks sin clasificar": validation_errors[
+                    "unclassified_chunks"
+                ],
+                "Chunks que superan el tamaño": validation_errors[
+                    "oversized_chunks"
+                ],
+            }
+        )
+
+    with st.expander("Ver documentos detectados"):
+        for pdf_file in pdf_files:
+            st.write(f"• {pdf_file.name}")
 
     st.subheader("Consulta documental")
 
@@ -142,31 +366,15 @@ def main() -> None:
         placeholder="Ejemplo: ¿Cuánto tarda un reembolso?",
         disabled=True,
         help=(
-            "El campo se habilitará cuando implementemos "
-            "el servicio RAG."
+            "El campo se habilitará cuando estén implementados "
+            "los embeddings, FAISS y el servicio RAG."
         ),
     )
 
-    with st.sidebar:
-        st.header("Configuración")
-
-        st.write(f"**Aplicación:** {app_name}")
-        st.write(f"**Versión:** {app_version}")
-        st.write(f"**Entorno:** {app_environment}")
-        st.write(
-            f"**Modelo:** "
-            f"{os.getenv('GEMINI_CHAT_MODEL', 'gemini-3.5-flash')}"
-        )
-        st.write(
-            f"**Embeddings:** "
-            f"{os.getenv('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001')}"
-        )
-
-        st.divider()
-
-        st.caption(
-            "La clave de Gemini nunca se muestra en la interfaz."
-        )
+    st.caption(
+        "Siguiente hito: generar embeddings con Gemini y construir "
+        "el índice vectorial FAISS."
+    )
 
 
 if __name__ == "__main__":
