@@ -15,10 +15,21 @@ from bimbam_assistant.core.config import (
     ConfigurationError,
     get_settings,
 )
+from bimbam_assistant.infrastructure.faiss_store import (
+    FaissStoreError,
+    load_vector_store,
+)
 from bimbam_assistant.infrastructure.pdf_loader import (
     PdfLoadingError,
     find_pdf_files,
     load_pdf_documents,
+)
+
+
+INDEX_FILE_NAMES = (
+    "index.faiss",
+    "documents.json",
+    "manifest.json",
 )
 
 
@@ -38,9 +49,10 @@ def build_processing_snapshot(
 
     del document_signature
 
-    resolved_documents_path = Path(documents_path)
+    pages = load_pdf_documents(
+        Path(documents_path)
+    )
 
-    pages = load_pdf_documents(resolved_documents_path)
     chunks = create_chunks(
         pages,
         chunk_size=chunk_size,
@@ -51,10 +63,12 @@ def build_processing_snapshot(
         str(page.metadata["document_name"])
         for page in pages
     )
+
     chunks_by_document = Counter(
         str(chunk.metadata["document_name"])
         for chunk in chunks
     )
+
     category_by_document = {
         str(page.metadata["document_name"]): str(page.metadata["category"])
         for page in pages
@@ -75,13 +89,11 @@ def build_processing_snapshot(
         for chunk in chunks
     ]
 
-    maximum_chunk_size = max(
-        (len(chunk.page_content) for chunk in chunks),
-        default=0,
-    )
-
     validation_errors = {
-        "chunks_without_id": sum(not chunk_id for chunk_id in chunk_ids),
+        "chunks_without_id": sum(
+            not chunk_id
+            for chunk_id in chunk_ids
+        ),
         "duplicated_ids": len(chunk_ids) - len(set(chunk_ids)),
         "chunks_without_source": sum(
             not chunk.metadata.get("source")
@@ -118,7 +130,10 @@ def build_processing_snapshot(
                 for chunk in chunks
             }
         ),
-        "maximum_chunk_size": maximum_chunk_size,
+        "maximum_chunk_size": max(
+            (len(chunk.page_content) for chunk in chunks),
+            default=0,
+        ),
         "details": details,
         "validation_errors": validation_errors,
         "processing_ready": (
@@ -128,19 +143,75 @@ def build_processing_snapshot(
     }
 
 
-def build_document_signature(
-    pdf_files: list[Path],
+@st.cache_data(show_spinner=False)
+def build_index_snapshot(
+    index_path: str,
+    index_signature: tuple[tuple[str, int, int], ...],
+) -> dict[str, object]:
+    """Carga y valida el índice persistido para mostrar su estado."""
+
+    del index_signature
+
+    store = load_vector_store(
+        Path(index_path)
+    )
+
+    manifest = dict(
+        store.manifest
+    )
+
+    return {
+        "vector_count": int(store.index.ntotal),
+        "embedding_dimension": int(store.index.d),
+        "embedding_model": str(
+            manifest.get("embedding_model", "Desconocido")
+        ),
+        "index_type": str(
+            manifest.get("index_type", "Desconocido")
+        ),
+        "distance_metric": str(
+            manifest.get("distance_metric", "Desconocida")
+        ),
+        "document_count": int(
+            manifest.get("document_count", 0)
+        ),
+        "page_count": int(
+            manifest.get("page_count", 0)
+        ),
+        "categories": list(
+            manifest.get("categories", [])
+        ),
+        "created_at_utc": str(
+            manifest.get("created_at_utc", "")
+        ),
+        "manifest": manifest,
+    }
+
+
+def build_file_signature(
+    files: list[Path],
 ) -> tuple[tuple[str, int, int], ...]:
-    """Construye una firma que permite invalidar la caché al cambiar un PDF."""
+    """Crea una firma para invalidar la caché cuando cambia un archivo."""
 
     return tuple(
         (
-            pdf_file.name,
-            pdf_file.stat().st_size,
-            pdf_file.stat().st_mtime_ns,
+            file.name,
+            file.stat().st_size,
+            file.stat().st_mtime_ns,
         )
-        for pdf_file in pdf_files
+        for file in files
     )
+
+
+def get_index_files(
+    index_path: Path,
+) -> list[Path]:
+    """Devuelve los archivos esperados del almacén vectorial."""
+
+    return [
+        index_path / file_name
+        for file_name in INDEX_FILE_NAMES
+    ]
 
 
 def render_sidebar() -> None:
@@ -159,9 +230,17 @@ def render_sidebar() -> None:
 
         st.write(f"**Chunk size:** {settings.chunk_size}")
         st.write(f"**Chunk overlap:** {settings.chunk_overlap}")
-        st.write(f"**Modelo:** {settings.gemini_chat_model}")
+        st.write(f"**Top k:** {settings.retrieval_k}")
         st.write(
-            f"**Embeddings:** {settings.gemini_embedding_model}"
+            f"**Umbral:** {settings.retrieval_score_threshold}"
+        )
+
+        st.divider()
+
+        st.write(f"**Modelo de chat:** {settings.gemini_chat_model}")
+        st.write(
+            f"**Modelo de embeddings:** "
+            f"{settings.gemini_embedding_model}"
         )
 
         st.divider()
@@ -195,10 +274,11 @@ def main() -> None:
 
     st.markdown(
         """
-        La preparación documental ya está implementada: los PDF se leen
-        página por página, se limpian, se clasifican y se dividen en
-        fragmentos trazables. La siguiente etapa incorporará embeddings
-        con Gemini y la persistencia del índice vectorial en FAISS.
+        La preparación e indexación documental ya están implementadas.
+        Los PDF se procesan en chunks trazables, se convierten en
+        embeddings con Gemini y se almacenan en un índice FAISS local.
+        El siguiente hito es exponer la recuperación semántica y usar
+        los fragmentos recuperados para construir respuestas con fuentes.
         """
     )
 
@@ -209,14 +289,12 @@ def main() -> None:
             settings.require_documents_path()
         )
 
-        document_signature = build_document_signature(pdf_files)
-
         with st.spinner(
             "Validando la lectura y fragmentación del corpus..."
         ):
             processing = build_processing_snapshot(
                 str(settings.documents_path),
-                document_signature,
+                build_file_signature(pdf_files),
                 settings.chunk_size,
                 settings.chunk_overlap,
             )
@@ -232,9 +310,35 @@ def main() -> None:
         )
         return
 
+    index_snapshot: dict[str, object] | None = None
+    index_error: str | None = None
+
+    if settings.faiss_index_exists:
+        try:
+            index_files = get_index_files(
+                settings.faiss_index_path
+            )
+
+            with st.spinner(
+                "Validando el índice vectorial..."
+            ):
+                index_snapshot = build_index_snapshot(
+                    str(settings.faiss_index_path),
+                    build_file_signature(index_files),
+                )
+
+        except FaissStoreError as error:
+            index_error = str(error)
+
     st.subheader("Estado del proyecto")
 
-    document_column, page_column, chunk_column, index_column = st.columns(4)
+    (
+        document_column,
+        page_column,
+        chunk_column,
+        vector_column,
+        index_column,
+    ) = st.columns(5)
 
     with document_column:
         st.metric(
@@ -254,12 +358,22 @@ def main() -> None:
             value=int(processing["chunk_count"]),
         )
 
+    with vector_column:
+        st.metric(
+            label="Vectores",
+            value=(
+                int(index_snapshot["vector_count"])
+                if index_snapshot
+                else 0
+            ),
+        )
+
     with index_column:
         st.metric(
             label="Índice FAISS",
             value=(
                 "Disponible"
-                if settings.faiss_index_exists
+                if index_snapshot
                 else "Pendiente"
             ),
         )
@@ -271,32 +385,47 @@ def main() -> None:
         )
     else:
         st.warning(
-            "El procesamiento terminó, pero existen validaciones "
-            "que deben revisarse antes de generar embeddings."
+            "El procesamiento documental contiene validaciones "
+            "que deben revisarse."
         )
 
     if not settings.google_api_key_configured:
         st.warning(
-            "GOOGLE_API_KEY no está configurada. La preparación "
-            "documental funciona sin ella, pero será necesaria para "
-            "generar embeddings y respuestas."
+            "GOOGLE_API_KEY no está configurada. El índice existente "
+            "puede cargarse localmente, pero la clave será necesaria "
+            "para nuevas consultas y para regenerar embeddings."
         )
     else:
         st.info(
-            "La clave de Gemini está configurada. Todavía no se utiliza "
-            "durante la lectura y fragmentación de los PDF."
+            "La clave de Gemini está configurada para generar "
+            "embeddings de documentos y consultas."
         )
 
-    if not settings.faiss_index_exists:
-        st.info(
-            "El índice FAISS aún no ha sido generado. La siguiente "
-            "etapa convertirá los chunks en embeddings y persistirá "
-            "el índice en storage/faiss_index/."
+    if index_snapshot:
+        st.success(
+            "El índice FAISS está disponible y fue validado: "
+            f"{index_snapshot['vector_count']} vectores de "
+            f"{index_snapshot['embedding_dimension']} dimensiones."
+        )
+    elif index_error:
+        st.error(
+            "Se encontraron archivos del índice, pero no superaron "
+            f"la validación: {index_error}"
+        )
+    else:
+        st.warning(
+            "El índice vectorial no está disponible. Ejecuta "
+            "`python scripts/index_documents.py` para generarlo."
         )
 
     st.subheader("Resumen del procesamiento")
 
-    empty_column, ocr_column, category_column, size_column = st.columns(4)
+    (
+        empty_column,
+        ocr_column,
+        category_column,
+        size_column,
+    ) = st.columns(4)
 
     with empty_column:
         st.metric(
@@ -322,7 +451,10 @@ def main() -> None:
             value=f"{int(processing['maximum_chunk_size'])} caracteres",
         )
 
-    with st.expander("Ver detalle por documento", expanded=True):
+    with st.expander(
+        "Ver detalle por documento",
+        expanded=True,
+    ):
         st.dataframe(
             processing["details"],
             use_container_width=True,
@@ -331,7 +463,7 @@ def main() -> None:
 
     validation_errors = processing["validation_errors"]
 
-    with st.expander("Ver validaciones técnicas"):
+    with st.expander("Ver validaciones del procesamiento"):
         st.write(
             {
                 "Chunks sin identificador": validation_errors[
@@ -359,6 +491,50 @@ def main() -> None:
         for pdf_file in pdf_files:
             st.write(f"• {pdf_file.name}")
 
+    st.subheader("Índice vectorial")
+
+    if index_snapshot:
+        (
+            model_column,
+            dimension_column,
+            type_column,
+            metric_column,
+        ) = st.columns(4)
+
+        with model_column:
+            st.metric(
+                label="Modelo de embeddings",
+                value=str(index_snapshot["embedding_model"]),
+            )
+
+        with dimension_column:
+            st.metric(
+                label="Dimensión",
+                value=int(index_snapshot["embedding_dimension"]),
+            )
+
+        with type_column:
+            st.metric(
+                label="Tipo de índice",
+                value=str(index_snapshot["index_type"]),
+            )
+
+        with metric_column:
+            st.metric(
+                label="Métrica",
+                value=str(index_snapshot["distance_metric"]),
+            )
+
+        with st.expander("Ver manifiesto del índice"):
+            st.json(
+                index_snapshot["manifest"]
+            )
+    else:
+        st.info(
+            "El resumen vectorial aparecerá después de generar "
+            "y validar el índice."
+        )
+
     st.subheader("Consulta documental")
 
     st.text_input(
@@ -366,14 +542,15 @@ def main() -> None:
         placeholder="Ejemplo: ¿Cuánto tarda un reembolso?",
         disabled=True,
         help=(
-            "El campo se habilitará cuando estén implementados "
-            "los embeddings, FAISS y el servicio RAG."
+            "El campo se habilitará cuando se implemente el servicio "
+            "de recuperación semántica y la cadena RAG."
         ),
     )
 
     st.caption(
-        "Siguiente hito: generar embeddings con Gemini y construir "
-        "el índice vectorial FAISS."
+        "Siguiente hito: recuperar los fragmentos más relevantes "
+        f"con k={settings.retrieval_k} y un umbral de "
+        f"{settings.retrieval_score_threshold}."
     )
 
 

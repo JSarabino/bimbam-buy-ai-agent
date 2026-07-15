@@ -15,11 +15,11 @@ El objetivo del proyecto es construir un asistente que responda consultas relaci
 - Métodos de pago.
 - Programa de afiliados.
 
-Las respuestas deberán generarse exclusivamente a partir del corpus documental y mostrar el documento y la página utilizados como fuente.
+Las respuestas deberán generarse exclusivamente a partir del corpus documental e indicar el documento y la página utilizados como fuente.
 
 ## Estado del proyecto
 
-**Fase actual: procesamiento documental y fragmentación completados.**
+**Fase actual: indexación vectorial completada.**
 
 El proyecto ya permite:
 
@@ -32,8 +32,14 @@ El proyecto ya permite:
 - Detectar páginas vacías o candidatas a OCR.
 - Dividir el contenido mediante `RecursiveCharacterTextSplitter`.
 - Generar identificadores únicos para cada chunk.
-- Validar el procesamiento mediante `scripts/index_documents.py`.
-- Consultar el estado del procesamiento desde Streamlit.
+- Crear embeddings con `gemini-embedding-001`.
+- Procesar los embeddings por lotes con pausas y reintentos ante límites de uso.
+- Construir un índice FAISS con similitud coseno.
+- Persistir y volver a cargar el índice vectorial.
+- Validar el pipeline mediante `scripts/index_documents.py`.
+- Consultar el estado del corpus y del índice desde Streamlit.
+
+La recuperación semántica como servicio y la generación de respuestas con un modelo de chat todavía están pendientes.
 
 ### Resultado actual del corpus
 
@@ -42,7 +48,9 @@ El proyecto ya permite:
 | Documentos PDF | 5 |
 | Páginas procesadas | 57 |
 | Chunks generados | 108 |
-| Tamaño máximo observado | 999 caracteres |
+| Vectores almacenados | 108 |
+| Dimensión de cada embedding | 3072 |
+| Tamaño máximo observado del chunk | 999 caracteres |
 | Categorías reconocidas | 5 |
 | Chunks sin clasificar | 0 |
 | Identificadores duplicados | 0 |
@@ -56,17 +64,17 @@ Estos valores corresponden al corpus actual y pueden cambiar cuando se agreguen 
 | Entorno Python 3.11 | Completado |
 | Configuración central | Completada |
 | Documentos PDF | 5 detectados |
-| Extracción de texto | Completada |
-| Limpieza del contenido | Completada |
+| Extracción y limpieza | Completadas |
 | Metadatos y categorías | Completados |
 | Fragmentación en chunks | Completada |
-| Validación del procesamiento | Completada |
+| Embeddings con Gemini | Completados |
+| Índice FAISS | Completado |
+| Persistencia del índice | Completada |
 | Interfaz Streamlit | Actualizada |
-| Embeddings con Gemini | Pendiente |
-| Índice FAISS | Pendiente |
 | Recuperación semántica | Pendiente |
 | Cadena RAG | Pendiente |
 | Agente con LangGraph | Pendiente |
+| Pruebas automatizadas | Pendientes |
 | Despliegue en OCI | Pendiente |
 
 ## Tecnologías
@@ -76,7 +84,10 @@ Estos valores corresponden al corpus actual y pueden cambiar cuando se agreguen 
 - Python 3.11.
 - LangChain Core.
 - LangChain Text Splitters.
+- Google Gemini Embeddings.
 - PyMuPDF.
+- FAISS CPU.
+- NumPy.
 - Streamlit.
 - python-dotenv.
 - Pydantic.
@@ -85,10 +96,8 @@ Estos valores corresponden al corpus actual y pueden cambiar cuando se agreguen 
 
 ### Preparadas para las siguientes etapas
 
+- Google Gemini como modelo de chat.
 - LangGraph.
-- Google Gemini.
-- Gemini Embeddings.
-- FAISS.
 - Oracle Cloud Infrastructure.
 
 ## Arquitectura
@@ -116,9 +125,11 @@ Normalización de metadatos            ✓
       ↓
 Fragmentación del contenido           ✓
       ↓
-Generación de embeddings              Pendiente
+Generación de embeddings              ✓
       ↓
-Creación y persistencia en FAISS      Pendiente
+Normalización de vectores             ✓
+      ↓
+Creación y persistencia en FAISS      ✓
 ```
 
 ### Flujo de consulta
@@ -126,13 +137,13 @@ Creación y persistencia en FAISS      Pendiente
 ```text
 Pregunta del usuario
       ↓
-Embedding de la pregunta
+Embedding de la pregunta              ✓ como función de infraestructura
       ↓
-Búsqueda en FAISS
+Búsqueda en FAISS                     ✓ como función de infraestructura
       ↓
-Recuperación de fragmentos relevantes
+Recuperación y filtrado               Pendiente como servicio
       ↓
-Contexto + pregunta
+Contexto + pregunta                   Pendiente
       ↓
 Gemini
       ↓
@@ -155,7 +166,7 @@ El corpus inicial está compuesto por:
 4. Preguntas Frecuentes sobre Métodos de Pago de BimBam Buy.
 5. Programa de Afiliados de BimBam Buy.
 
-Cada página procesada conserva metadatos como:
+Cada página conserva metadatos como:
 
 - Identificador y nombre del documento.
 - Categoría.
@@ -167,7 +178,7 @@ Cada página procesada conserva metadatos como:
 - Estado de página vacía.
 - Posible necesidad de OCR.
 
-Cada chunk agrega además:
+Cada chunk agrega:
 
 - `chunk_id`.
 - `chunk_index`.
@@ -201,7 +212,11 @@ bimbam-buy-ai-agent/
 │   └── index_documents.py
 │
 ├── storage/
-│   └── .gitkeep
+│   ├── .gitkeep
+│   └── faiss_index/                 # Generado localmente e ignorado por Git
+│       ├── index.faiss
+│       ├── documents.json
+│       └── manifest.json
 │
 ├── bimbam_assistant/
 │   ├── __init__.py
@@ -315,7 +330,7 @@ Copiar los PDF en:
 data/documents/
 ```
 
-## Procesamiento documental
+## Procesamiento e indexación
 
 Ejecutar:
 
@@ -330,15 +345,34 @@ El script:
 3. Limpia y normaliza el contenido.
 4. Asigna metadatos y categorías.
 5. Divide las páginas en chunks.
-6. Verifica identificadores, fuentes, páginas, tamaños y categorías.
-7. Devuelve código de salida `0` cuando el procesamiento es válido.
+6. Valida identificadores, fuentes, páginas, tamaños y categorías.
+7. Genera los embeddings con Gemini por lotes.
+8. Aplica pausas y reintentos cuando la API alcanza un límite temporal.
+9. Construye el índice `IndexFlatIP` con vectores normalizados.
+10. Guarda el índice y su información asociada.
+11. Devuelve código de salida `0` cuando la indexación termina correctamente.
 
-En PowerShell se puede verificar el código de salida con:
+En PowerShell:
 
 ```powershell
 python scripts/index_documents.py
 $LASTEXITCODE
 ```
+
+El proceso genera:
+
+```text
+storage/faiss_index/
+├── index.faiss
+├── documents.json
+└── manifest.json
+```
+
+- `index.faiss`: vectores y estructura de búsqueda.
+- `documents.json`: texto y metadatos asociados a cada vector.
+- `manifest.json`: modelo, dimensión, métrica y configuración del índice.
+
+El directorio generado está ignorado por Git. Después de clonar el repositorio es necesario reconstruirlo mediante el script.
 
 ## Ejecutar la aplicación
 
@@ -360,9 +394,12 @@ La página inicial muestra:
 - Chunks generados.
 - Páginas vacías y candidatas a OCR.
 - Categorías y resumen por documento.
-- Estado del índice FAISS.
+- Disponibilidad y validación del índice FAISS.
+- Modelo de embeddings.
+- Dimensión y cantidad de vectores.
+- Tipo de índice y métrica de similitud.
 
-El campo de consulta permanece deshabilitado hasta implementar el servicio RAG.
+El campo de consulta permanece deshabilitado hasta implementar el servicio de recuperación semántica y la cadena RAG.
 
 ## Ejecución con Docker
 
@@ -391,6 +428,8 @@ docker run \
   bimbam-buy-ai-agent
 ```
 
+La estrategia para construir o montar el índice dentro del despliegue contenerizado se completará junto con la etapa de despliegue.
+
 ## Variables de entorno
 
 | Variable | Descripción |
@@ -413,25 +452,24 @@ docker run \
 - La aplicación nunca muestra la clave.
 - El contenedor se ejecuta con un usuario sin privilegios.
 - `.venv` no se almacena en GitHub.
-- El índice FAISS generado tampoco se almacenará en el repositorio.
+- `storage/faiss_index/` no se almacena en GitHub.
+- El índice se carga únicamente desde archivos generados por la aplicación.
 
 ## Índice vectorial
 
-El índice se almacenará en:
+La implementación actual utiliza:
 
 ```text
-storage/faiss_index/
+Modelo              gemini-embedding-001
+Dimensión           3072
+Índice              IndexFlatIP
+Métrica             similitud coseno
+Vectores            108
 ```
 
-En la siguiente etapa, `scripts/index_documents.py` se ampliará para generar:
+Los embeddings se normalizan antes de agregarlos al índice. Así, el producto interno calculado por `IndexFlatIP` representa la similitud coseno.
 
-```text
-storage/faiss_index/
-├── index.faiss
-└── index.pkl
-```
-
-Actualmente el script finaliza después de validar los chunks; todavía no consume la API de Gemini ni genera el índice.
+El manifiesto permite verificar que el índice cargado sea compatible con el modelo configurado y con la dimensión esperada.
 
 ## Pruebas
 
@@ -446,6 +484,7 @@ Se contemplan pruebas para:
 - Lectura y limpieza de documentos.
 - Conservación de metadatos.
 - Fragmentación del contenido.
+- Creación, persistencia y carga del índice.
 - Recuperación semántica.
 - Generación de respuestas.
 - Consultas sin información suficiente.
@@ -458,27 +497,32 @@ python -m pytest
 
 ## Próximas etapas
 
-1. Implementar el proveedor de embeddings con Gemini.
-2. Generar embeddings para los chunks.
-3. Crear y persistir el índice FAISS.
-4. Implementar la recuperación semántica.
-5. Construir la cadena RAG.
-6. Mostrar respuestas con documento y página.
-7. Implementar el triaje y el agente con LangGraph.
-8. Crear el banco de preguntas de evaluación.
-9. Implementar las pruebas automatizadas.
-10. Construir y probar la imagen Docker.
-11. Desplegar la aplicación en OCI Compute.
+1. Implementar el servicio de recuperación semántica.
+2. Aplicar `RETRIEVAL_K` y `RETRIEVAL_SCORE_THRESHOLD`.
+3. Devolver fragmentos con documento, página y puntuación.
+4. Construir la cadena RAG.
+5. Mostrar respuestas y fuentes en Streamlit.
+6. Implementar el triaje y el agente con LangGraph.
+7. Crear el banco de preguntas de evaluación.
+8. Implementar las pruebas automatizadas.
+9. Construir y probar la imagen Docker con su estrategia de índice.
+10. Desplegar la aplicación en OCI Compute.
 
 ## Alcance actual
 
-El hito actual cubre la preparación documental previa a los embeddings:
+El hito actual cubre:
 
 ```text
-PDF → extracción → limpieza → metadatos → chunks validados
+PDF
+  → extracción
+  → limpieza
+  → metadatos
+  → chunks validados
+  → embeddings
+  → índice FAISS persistido y validado
 ```
 
-La aplicación todavía no genera respuestas ni realiza búsquedas semánticas.
+La aplicación todavía no genera respuestas ni expone la recuperación semántica al usuario.
 
 ## Autor
 

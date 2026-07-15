@@ -1,31 +1,55 @@
-"""Servicio de preparación de documentos para la indexación.
+"""Servicio de preparación e indexación documental.
 
-Este módulo se encarga de convertir las páginas extraídas
-de los PDF en fragmentos más pequeños.
+Este módulo coordina:
 
-En una etapa posterior también coordinará:
-
-1. La generación de embeddings.
-2. La creación del índice FAISS.
-3. La persistencia del índice.
+1. La fragmentación de las páginas extraídas.
+2. La validación de los chunks.
+3. La generación de embeddings con Gemini.
+4. La creación y persistencia del índice FAISS.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from bimbam_assistant.core.config import get_settings
+from bimbam_assistant.infrastructure.faiss_store import (
+    FaissStoreError,
+    create_and_save_vector_store,
+)
+from bimbam_assistant.infrastructure.gemini_provider import (
+    DEFAULT_EMBEDDING_BATCH_SIZE,
+    GeminiEmbeddingError,
+    embed_documents,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
 class ChunkingError(ValueError):
-    """Error producido por parámetros de fragmentación inválidos."""
+    """Error producido por una configuración de chunking inválida."""
+
+
+class IndexingError(RuntimeError):
+    """Error producido durante la indexación vectorial."""
+
+
+@dataclass(frozen=True)
+class IndexingResult:
+    """Resultado de la generación del índice vectorial."""
+
+    chunk_count: int
+    embedding_dimension: int
+    output_path: Path
+    manifest: dict[str, Any]
 
 
 def build_text_splitter(
@@ -33,11 +57,7 @@ def build_text_splitter(
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> RecursiveCharacterTextSplitter:
-    """Construye el separador de texto con la configuración del proyecto.
-
-    Los parámetros recibidos directamente tienen prioridad sobre los
-    valores definidos en el archivo .env.
-    """
+    """Construye el separador con la configuración del proyecto."""
 
     settings = get_settings()
 
@@ -88,14 +108,7 @@ def create_chunks(
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> list[Document]:
-    """Divide documentos de página en chunks con metadatos trazables.
-
-    Cada elemento recibido representa una página extraída previamente
-    por pdf_loader.py.
-
-    Las páginas vacías se omiten porque no contienen información útil
-    para generar embeddings.
-    """
+    """Divide las páginas en chunks con metadatos trazables."""
 
     if not documents:
         logger.warning(
@@ -130,21 +143,23 @@ def create_chunks(
         page_metadata = dict(page_document.metadata)
 
         is_empty = bool(
-            page_metadata.get("is_empty", False)
+            page_metadata.get(
+                "is_empty",
+                False,
+            )
         )
 
         if not page_content or is_empty:
             skipped_empty_pages += 1
             continue
 
-        # Creamos una copia para no modificar el Document original.
         source_document = Document(
             page_content=page_content,
             metadata=page_metadata,
         )
 
-        # Como se envía una sola página, ningún chunk puede mezclar
-        # contenido perteneciente a páginas diferentes.
+        # Se procesa cada página por separado para que un chunk
+        # nunca mezcle contenido de páginas diferentes.
         page_chunks = splitter.split_documents(
             [source_document]
         )
@@ -170,7 +185,9 @@ def create_chunks(
             if not chunk_content:
                 continue
 
-            chunk_metadata = dict(chunk.metadata)
+            chunk_metadata = dict(
+                chunk.metadata
+            )
 
             chunk_id = (
                 f"{document_id}"
@@ -211,3 +228,186 @@ def create_chunks(
     )
 
     return chunks
+
+
+def validate_chunks_for_indexing(
+    chunks: Sequence[Document],
+) -> None:
+    """Valida que los chunks estén listos para generar embeddings."""
+
+    if not chunks:
+        raise IndexingError(
+            "No existen chunks para indexar."
+        )
+
+    chunk_ids: list[str] = []
+
+    for position, chunk in enumerate(chunks):
+        if not chunk.page_content.strip():
+            raise IndexingError(
+                "Se encontró un chunk vacío en la posición "
+                f"{position}."
+            )
+
+        chunk_id = str(
+            chunk.metadata.get(
+                "chunk_id",
+                "",
+            )
+        ).strip()
+
+        if not chunk_id:
+            raise IndexingError(
+                "Se encontró un chunk sin chunk_id en la posición "
+                f"{position}."
+            )
+
+        if not chunk.metadata.get("source"):
+            raise IndexingError(
+                "El chunk no contiene la fuente original: "
+                f"{chunk_id}."
+            )
+
+        if "page_number" not in chunk.metadata:
+            raise IndexingError(
+                "El chunk no contiene número de página: "
+                f"{chunk_id}."
+            )
+
+        category = str(
+            chunk.metadata.get(
+                "category",
+                "sin_clasificar",
+            )
+        )
+
+        if category == "sin_clasificar":
+            raise IndexingError(
+                "El chunk no tiene una categoría válida: "
+                f"{chunk_id}."
+            )
+
+        chunk_ids.append(chunk_id)
+
+    if len(chunk_ids) != len(set(chunk_ids)):
+        raise IndexingError(
+            "Existen identificadores de chunk duplicados."
+        )
+
+
+def create_vector_index(
+    chunks: Sequence[Document],
+    *,
+    output_path: Path | None = None,
+    batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
+) -> IndexingResult:
+    """Genera embeddings y persiste el índice FAISS.
+
+    Cada posición de la lista de chunks se mantiene alineada con la
+    posición del embedding correspondiente.
+    """
+
+    validate_chunks_for_indexing(
+        chunks
+    )
+
+    if batch_size <= 0:
+        raise IndexingError(
+            "batch_size debe ser mayor que cero."
+        )
+
+    settings = get_settings()
+
+    destination = (
+        output_path.expanduser().resolve()
+        if output_path is not None
+        else settings.faiss_index_path
+    )
+
+    texts = [
+        chunk.page_content
+        for chunk in chunks
+    ]
+
+    logger.info(
+        "Generando embeddings para %s chunks.",
+        len(texts),
+    )
+
+    try:
+        vectors = embed_documents(
+            texts,
+            batch_size=batch_size,
+        )
+
+        if len(vectors) != len(chunks):
+            raise IndexingError(
+                "La cantidad de embeddings no coincide con "
+                "la cantidad de chunks. "
+                f"Chunks: {len(chunks)}. "
+                f"Embeddings: {len(vectors)}."
+            )
+
+        if not vectors:
+            raise IndexingError(
+                "El proveedor no devolvió embeddings."
+            )
+
+        embedding_dimension = len(
+            vectors[0]
+        )
+
+        manifest = create_and_save_vector_store(
+            chunks,
+            vectors,
+            destination,
+        )
+
+    except IndexingError:
+        raise
+
+    except (
+        GeminiEmbeddingError,
+        FaissStoreError,
+    ) as error:
+        raise IndexingError(
+            "No fue posible crear el índice vectorial: "
+            f"{error}"
+        ) from error
+
+    logger.info(
+        "Índice vectorial creado: %s chunks, dimensión %s, ruta %s.",
+        len(chunks),
+        embedding_dimension,
+        destination,
+    )
+
+    return IndexingResult(
+        chunk_count=len(chunks),
+        embedding_dimension=embedding_dimension,
+        output_path=destination,
+        manifest=manifest,
+    )
+
+
+def process_and_index_documents(
+    pages: Sequence[Document],
+    *,
+    output_path: Path | None = None,
+    batch_size: int = DEFAULT_EMBEDDING_BATCH_SIZE,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> IndexingResult:
+    """Ejecuta chunking, embeddings y persistencia de FAISS."""
+
+    chunks = create_chunks(
+        pages,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+
+    return create_vector_index(
+        chunks,
+        output_path=output_path,
+        batch_size=batch_size,
+    )

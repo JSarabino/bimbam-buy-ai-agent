@@ -142,14 +142,15 @@ class Settings:
             self.google_api_key
             and self.google_api_key.strip()
         )
-
+    
     @property
     def faiss_index_exists(self) -> bool:
-        """Comprueba si existen los dos archivos del índice FAISS."""
+        """Comprueba si el almacén vectorial está completo."""
 
         return (
             (self.faiss_index_path / "index.faiss").is_file()
-            and (self.faiss_index_path / "index.pkl").is_file()
+            and (self.faiss_index_path / "documents.json").is_file()
+            and (self.faiss_index_path / "manifest.json").is_file()
         )
 
     def validate(self) -> None:
