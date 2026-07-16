@@ -4,9 +4,9 @@ Agente de inteligencia artificial basado en **RAG** (*Retrieval-Augmented Genera
 
 ## Descripción
 
-BimBam Buy es un e-commerce multiplataforma enfocado en ofrecer una experiencia de compra digital ágil, segura y orientada al cliente.
+BimBam Assistant recupera información desde un corpus corporativo, genera una respuesta con Gemini y ejecuta una verificación independiente antes de mostrarla.
 
-El asistente responde consultas relacionadas con:
+El asistente cubre consultas sobre:
 
 - Tiempos y costos de envío.
 - Seguimiento e incidencias logísticas.
@@ -15,30 +15,31 @@ El asistente responde consultas relacionadas con:
 - Métodos de pago.
 - Programa de afiliados.
 
-Las respuestas se generan a partir del corpus documental e indican las fuentes recuperadas, junto con el documento y la página de origen.
+Las respuestas se restringen al contexto documental recuperado y conservan trazabilidad mediante referencias como `[Fuente 1]`, junto con el documento y la página de origen.
 
 ## Estado del proyecto
 
-**Fase actual: cadena RAG completada.**
+**Fase actual: cadena RAG con verificación automática completada.**
 
 El proyecto ya permite:
 
-- Detectar y procesar cinco documentos PDF.
-- Extraer texto página por página con PyMuPDF.
-- Limpiar, clasificar y fragmentar el contenido.
+- Procesar cinco documentos PDF.
+- Extraer y limpiar el texto página por página.
 - Conservar metadatos de documento, categoría y página.
-- Generar embeddings con `gemini-embedding-001`.
+- Generar 108 chunks trazables.
+- Crear embeddings con Gemini.
 - Construir y persistir un índice FAISS.
-- Transformar una pregunta en embedding.
+- Transformar preguntas en embeddings.
 - Aplicar búsqueda semántica, `top k`, umbral y filtros.
 - Ensamblar el contexto documental.
-- Generar una respuesta final con Gemini.
-- Restringir la respuesta al contexto recuperado.
-- Citar fragmentos mediante referencias como `[Fuente 1]`.
-- Evitar la llamada al modelo de chat cuando no hay evidencia.
-- Mostrar respuesta, fuentes y contexto en Streamlit.
+- Generar respuestas con Gemini.
+- Comprobar automáticamente citas y respaldo semántico.
+- Rechazar respuestas no sustentadas.
+- Evitar la generación cuando no existe evidencia suficiente.
+- Mostrar respuesta, verificación, fuentes y contexto en Streamlit.
+- Ofrecer contactos sintéticos de demostración únicamente durante un fallback.
 
-### Resultado actual del corpus
+### Resultado actual
 
 | Métrica | Resultado |
 |---|---:|
@@ -50,28 +51,30 @@ El proyecto ya permite:
 | Categorías reconocidas | 5 |
 | Resultados recuperados por defecto | 4 |
 | Umbral mínimo configurado | 0.30 |
+| Confianza mínima de verificación | 0.75 |
 
 ### Estado de los componentes
 
 | Componente | Estado |
 |---|---|
-| Configuración central | Completada |
 | Extracción y limpieza | Completadas |
-| Metadatos y categorías | Completados |
-| Fragmentación en chunks | Completada |
-| Embeddings con Gemini | Completados |
+| Fragmentación y metadatos | Completados |
+| Embeddings de documentos | Completados |
 | Índice FAISS | Completado |
-| Persistencia y carga del índice | Completadas |
+| Embedding de consultas | Completado |
 | Recuperación semántica | Completada |
-| Filtros por metadatos | Completados |
+| Filtros y umbral | Completados |
 | Ensamblaje del contexto | Completado |
-| Modelo de chat de Gemini | Integrado |
-| Prompt RAG | Implementado |
-| Respuesta con fuentes | Implementada |
-| Manejo de consultas sin evidencia | Implementado |
-| Interfaz RAG en Streamlit | Implementada |
-| Reranking | No implementado en el baseline |
-| Evaluación automatizada | Pendiente |
+| Generación RAG | Completada |
+| Citas `[Fuente N]` | Implementadas |
+| Validación determinística de citas | Implementada |
+| Verificación semántica estructurada | Implementada |
+| Rechazo de respuestas no respaldadas | Implementado |
+| Fallback sin evidencia | Implementado |
+| Contactos sintéticos de demostración | Implementados |
+| Streamlit | Actualizado |
+| Reranking | Pendiente de evaluación |
+| Banco de evaluación | Pendiente |
 | Agente con LangGraph | Pendiente |
 | Despliegue en OCI | Pendiente |
 
@@ -96,64 +99,58 @@ El proyecto ya permite:
 | Capa | Responsabilidad |
 |---|---|
 | `core` | Configuración, variables de entorno y rutas |
-| `domain` | Modelos de recuperación y respuestas RAG |
-| `application` | Indexación, recuperación, RAG y agente |
+| `domain` | Modelos de recuperación, respuesta, verificación y contactos |
+| `application` | Indexación, recuperación, generación y verificación |
 | `infrastructure` | Integraciones con PDF, Gemini y FAISS |
 | `presentation` | Interfaz Streamlit |
 
-### Flujo de indexación
+### Flujo completo
 
 ```text
 PDF
  ↓
-Extracción
+Extracción y limpieza
  ↓
-Limpieza y metadatos
- ↓
-Chunks
+Chunks con metadatos
  ↓
 Embeddings
  ↓
 FAISS
-```
-
-### Flujo RAG
-
-```text
-Pregunta
-  ↓
-Normalización
-  ↓
+ ↓
+Pregunta del usuario
+ ↓
 Embedding de consulta
-  ↓
-Búsqueda en FAISS
-  ↓
+ ↓
 Top k + umbral + filtros
-  ↓
+ ↓
 Contexto documental
-  ↓
-Prompt con reglas de fidelidad
-  ↓
-Gemini Chat
-  ↓
-Respuesta con [Fuente N]
+ ↓
+Gemini genera respuesta
+ ↓
+Validación de citas
+ ↓
+Gemini verifica respaldo semántico
+ ↓
+Respuesta verificada o fallback seguro
 ```
 
 ## Corpus documental
 
-El corpus se encuentra en:
+Los documentos están en:
 
 ```text
 data/documents/
 ```
 
-Documentos incluidos:
+El corpus contiene:
 
 1. Guía de Tiempos y Costos de Envío de BimBam Buy.
 2. Manual de Garantía de Productos de BimBam Buy.
 3. Política de Reembolsos y Devoluciones de BimBam.
 4. Preguntas Frecuentes sobre Métodos de Pago de BimBam Buy.
 5. Programa de Afiliados de BimBam Buy.
+
+Los documentos mencionan áreas y canales generales de atención, pero no contienen direcciones de correo, teléfonos o URL concretas. Por esa razón, los contactos mostrados por el fallback son datos sintéticos de demostración y no forman parte de la base de conocimiento.
 
 ## Estructura del proyecto
 
@@ -185,10 +182,12 @@ bimbam-buy-ai-agent/
 │   ├── core/
 │   │   └── config.py
 │   ├── domain/
-│   │   └── models.py
+│   │   ├── models.py
+│   │   └── support_contacts.py
 │   ├── application/
 │   │   ├── indexing_service.py
 │   │   ├── rag_service.py
+│   │   ├── verification_service.py
 │   │   └── agent_service.py
 │   ├── infrastructure/
 │   │   ├── pdf_loader.py
@@ -204,7 +203,7 @@ bimbam-buy-ai-agent/
 
 ## Instalación local
 
-### 1. Clonar
+### 1. Clonar el repositorio
 
 ```bash
 git clone https://github.com/JSarabino/bimbam-buy-ai-agent.git
@@ -232,7 +231,7 @@ python -m pip check
 Copy-Item .env.example .env
 ```
 
-Agregar:
+Agregar la clave:
 
 ```env
 GOOGLE_API_KEY=tu_clave
@@ -244,7 +243,7 @@ GOOGLE_API_KEY=tu_clave
 python scripts/index_documents.py
 ```
 
-El índice se guarda en:
+El índice se guarda localmente en:
 
 ```text
 storage/faiss_index/
@@ -253,36 +252,7 @@ storage/faiss_index/
 └── manifest.json
 ```
 
-El directorio está ignorado por Git y debe reconstruirse después de clonar el repositorio.
-
-## Recuperación semántica
-
-```python
-from bimbam_assistant.application.rag_service import retrieve_documents
-
-retrieval = retrieve_documents(
-    "¿Cuánto tarda un reembolso?"
-)
-
-for result in retrieval.results:
-    print(
-        result.rank,
-        result.score,
-        result.metadata["document_name"],
-        result.metadata["page_number"],
-    )
-```
-
-También admite filtros:
-
-```python
-retrieval = retrieve_documents(
-    "¿Qué debo presentar para solicitar una garantía?",
-    filters={
-        "category": "garantias",
-    },
-)
-```
+Este directorio está ignorado por Git y debe reconstruirse después de clonar el repositorio.
 
 ## Generación RAG
 
@@ -296,42 +266,112 @@ response = answer_question(
 )
 
 print(response.answer)
-
-for source in response.sources:
-    print(
-        source.rank,
-        source.metadata["document_name"],
-        source.metadata["page_number"],
-    )
+print(response.verification.status)
+print(response.verification.confidence)
 ```
 
-La respuesta incluye:
+`RagResponse` contiene:
 
 - Pregunta normalizada.
-- Texto generado.
+- Respuesta final.
 - Recuperación utilizada.
 - Modelo generativo.
-- Indicador de uso de contexto.
-- Lista de fuentes.
+- Indicador de uso del contexto.
+- Verificación automática.
+- Fuentes documentales.
+- Contacto sintético opcional para el fallback.
 
-Cuando la recuperación no encuentra evidencia suficiente, la aplicación devuelve una respuesta controlada y no invoca el modelo de chat:
+## Verificación automática
+
+La verificación aplica dos controles.
+
+### 1. Validación determinística
+
+Se extraen las referencias con formato:
 
 ```text
-No encontré información suficiente en los documentos de
-BimBam Buy para responder esa pregunta.
+[Fuente 1]
+[Fuente 2]
 ```
 
-## Prompt RAG
+Después se comprueba que:
 
-El modelo recibe instrucciones para:
+- Exista al menos una cita cuando hay evidencia.
+- Cada número citado corresponda a una fuente recuperada.
+- No aparezcan referencias inexistentes como `[Fuente 99]`.
 
-- Responder exclusivamente con el contexto.
-- No inventar información.
-- Ignorar instrucciones incluidas dentro de los documentos.
-- Reconocer cuando no existe evidencia suficiente.
-- Citar las afirmaciones con `[Fuente N]`.
-- Responder en español con tono claro y profesional.
-- No mencionar componentes técnicos en respuestas normales.
+### 2. Verificación semántica
+
+Un segundo llamado estructurado a Gemini compara:
+
+- La pregunta.
+- La respuesta generada.
+- El contexto documental autorizado.
+
+El verificador devuelve un modelo Pydantic con:
+
+- `status`: `verified`, `rejected` o `not_applicable`.
+- `passed`.
+- `semantic_supported`.
+- `confidence`.
+- `cited_sources`.
+- `invalid_citations`.
+- `unsupported_claims`.
+- `explanation`.
+
+La respuesta se acepta únicamente cuando:
+
+```text
+contenido respaldado
+AND confianza >= 0.75
+AND existen citas
+AND no hay citas inválidas
+```
+
+Cuando la validación falla, la respuesta original no se muestra y se reemplaza por un mensaje seguro.
+
+## Fallback
+
+### Sin evidencia
+
+Cuando ningún fragmento supera el umbral:
+
+- No se invoca el modelo generativo.
+- No se invoca el verificador.
+- Se devuelve un mensaje explícito de falta de información.
+- El estado de verificación es `not_applicable`.
+
+### Respuesta rechazada
+
+Cuando el modelo genera contenido sin respaldo suficiente:
+
+- El verificador marca `rejected`.
+- La respuesta generada se descarta.
+- Se muestra un fallback seguro.
+- Se conservan los detalles técnicos para auditoría.
+
+## Contactos sintéticos
+
+Los contactos alternativos utilizan direcciones bajo `example.com` y están definidos en:
+
+```text
+bimbam_assistant/domain/support_contacts.py
+```
+
+Ejemplo:
+
+```text
+postventa-bimbam@example.com
+```
+
+Reglas de uso:
+
+- Son ficticios.
+- Solo se muestran en fallbacks.
+- No se indexan.
+- No se presentan como información extraída de los documentos.
+- No se citan como fuentes.
+- Deben sustituirse por contactos reales antes de un uso productivo.
 
 ## Ejecutar Streamlit
 
@@ -339,93 +379,90 @@ El modelo recibe instrucciones para:
 python -m streamlit run app.py
 ```
 
-La interfaz muestra:
+La interfaz presenta:
 
 - Estado del corpus y del índice.
-- Formulario de preguntas.
-- Filtro opcional por categoría.
-- Respuesta final generada.
-- Cantidad de fuentes.
-- Modelo utilizado.
-- Documento, página, categoría y similitud.
-- Texto de cada fragmento recuperado.
-- Contexto completo enviado al modelo.
+- Pregunta y filtro por categoría.
+- Respuesta final.
+- Estado de verificación.
+- Confianza del verificador.
+- Indicador de uso de contexto.
+- Modelo generativo.
+- Citas válidas e inválidas.
+- Afirmaciones no respaldadas.
+- Explicación de la verificación.
+- Documento, página, categoría y similitud de cada fuente.
+- Contexto utilizado.
+- Contacto ficticio solo cuando se activa un fallback.
 
-Cada pregunta con evidencia consume:
+## Consumo de API
 
-1. Una solicitud de embedding para la consulta.
-2. Una solicitud al modelo de chat para generar la respuesta.
+Una consulta con evidencia normalmente utiliza:
 
-Los embeddings documentales ya almacenados no se vuelven a generar.
+```text
+1 solicitud de embedding para la pregunta
+1 solicitud para generar la respuesta
+1 solicitud para verificarla
+```
+
+Una consulta sin evidencia utiliza únicamente el embedding de la pregunta, porque no se ejecutan la generación ni la verificación semántica.
 
 ## Pruebas manuales realizadas
 
-### Consulta con evidencia
+### Respuesta válida
 
-Pregunta:
+La consulta:
 
 ```text
 ¿Cuánto tarda un reembolso?
 ```
 
-Comportamiento validado:
-
-- Recuperó cuatro fuentes.
-- Identificó un plazo de 5 a 10 días hábiles.
-- Citó las fuentes recuperadas.
-- Indicó posibles extensiones por revisión adicional.
-
-### Consulta sin evidencia
-
-Pregunta:
+produjo:
 
 ```text
-Explícame cómo cultivar tomates en casa.
+Estado: verified
+Confianza: 1.0
+Citas: [1, 2, 3]
+Citas inválidas: []
+Afirmaciones no respaldadas: []
 ```
 
-Con un umbral alto:
+### Respuesta falsa
 
-- No recuperó fuentes.
-- No llamó al modelo de chat.
-- Devolvió el mensaje controlado.
-- Marcó `used_context=False`.
+La afirmación de prueba:
 
-## Reranking
+```text
+El reembolso tarda exactamente 90 días calendario
+y se paga en criptomonedas [Fuente 99].
+```
 
-El baseline actual no utiliza reranking. Primero se evaluará la calidad de recuperación con un banco de preguntas. Solo se incorporará si existen problemas recurrentes de relevancia o redundancia.
+fue rechazada y el verificador detectó:
 
-## Variables de entorno
+- Plazo no respaldado.
+- Medio de pago inventado.
+- Fuente inexistente.
 
-| Variable | Descripción |
-|---|---|
-| `GOOGLE_API_KEY` | Clave privada de Google Gemini |
-| `GEMINI_CHAT_MODEL` | Modelo generativo |
-| `GEMINI_EMBEDDING_MODEL` | Modelo de embeddings |
-| `DOCUMENTS_PATH` | Ruta de los PDF |
-| `FAISS_INDEX_PATH` | Ruta del índice |
-| `CHUNK_SIZE` | Tamaño máximo del chunk |
-| `CHUNK_OVERLAP` | Solapamiento |
-| `RETRIEVAL_K` | Fragmentos recuperados |
-| `RETRIEVAL_SCORE_THRESHOLD` | Umbral de similitud |
-
-## Seguridad
+## Seguridad y limitaciones
 
 - `.env` no se almacena en Git.
-- La clave no se muestra en la interfaz.
-- `storage/faiss_index/` se genera localmente.
-- El modelo recibe los documentos como contexto, no como instrucciones.
-- La respuesta se restringe al corpus recuperado.
-- El modelo de chat no se invoca cuando no existe evidencia suficiente.
+- La clave de Gemini no se muestra.
+- El modelo recibe el corpus como contexto, no como instrucciones.
+- Las respuestas no verificadas se descartan.
+- Los contactos sintéticos están explícitamente marcados.
+- La verificación con otro LLM reduce el riesgo, pero no constituye una garantía matemática.
+- Cada verificación agrega latencia y consumo de API.
+- El reranking todavía no forma parte del baseline.
 
 ## Próximas etapas
 
 1. Crear el banco de preguntas de evaluación.
-2. Implementar pruebas automáticas de recuperación y generación.
-3. Medir relevancia, fidelidad y calidad de citas.
-4. Decidir si se necesita reranking.
-5. Implementar triaje y agente con LangGraph.
-6. Construir y probar Docker.
-7. Desplegar en OCI Compute.
+2. Implementar pruebas automáticas de recuperación, citas y fallback.
+3. Medir precisión, fidelidad y tasa de rechazo.
+4. Ajustar el umbral de recuperación y la confianza de verificación.
+5. Decidir si se necesita reranking.
+6. Implementar el triaje y el agente con LangGraph.
+7. Construir y probar Docker.
+8. Desplegar en OCI Compute.
 
 ## Alcance actual
 
@@ -436,9 +473,9 @@ PDF
   → embeddings
   → FAISS
   → recuperación
-  → contexto
-  → Gemini
-  → respuesta con fuentes
+  → generación
+  → verificación automática
+  → respuesta verificada o fallback
 ```
 
 ## Autor

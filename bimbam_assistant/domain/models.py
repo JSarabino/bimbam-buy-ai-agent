@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -64,6 +64,68 @@ class RetrievalResponse(BaseModel):
 
         return bool(self.results)
 
+class AnswerVerification(BaseModel):
+    """Resultado de la verificación automática de una respuesta."""
+
+    status: Literal[
+        "verified",
+        "rejected",
+        "not_applicable",
+    ]
+
+    passed: bool = Field(
+        description=(
+            "Indica si la respuesta superó todos los controles."
+        ),
+    )
+
+    semantic_supported: bool = Field(
+        description=(
+            "Indica si las afirmaciones están respaldadas "
+            "por el contexto."
+        ),
+    )
+
+    confidence: float = Field(
+        ge=0,
+        le=1,
+        description="Confianza asignada por el verificador.",
+    )
+
+    citations_present: bool = Field(
+        description="Indica si la respuesta contiene citas.",
+    )
+
+    cited_sources: list[int] = Field(
+        default_factory=list,
+    )
+
+    invalid_citations: list[int] = Field(
+        default_factory=list,
+    )
+
+    unsupported_claims: list[str] = Field(
+        default_factory=list,
+    )
+
+    explanation: str = Field(
+        description="Explicación resumida de la verificación.",
+    )
+
+
+class SupportContact(BaseModel):
+    """Contacto alternativo utilizado por la demostración."""
+
+    area: str
+    email: str
+
+    is_demo: bool = Field(
+        default=True,
+        description=(
+            "Indica que el contacto es ficticio y solo se usa "
+            "para demostración."
+        ),
+    )
     
 class RagResponse(BaseModel):
     """Respuesta generada mediante recuperación aumentada."""
@@ -93,6 +155,10 @@ class RagResponse(BaseModel):
             "la respuesta."
         ),
     )
+    
+    verification: AnswerVerification
+
+    support_contact: SupportContact | None = None
 
     @property
     def has_sources(self) -> bool:
@@ -107,3 +173,9 @@ class RagResponse(BaseModel):
         """Devuelve los chunks utilizados como fuentes."""
 
         return self.retrieval.results
+    
+    @property
+    def is_verified(self) -> bool:
+        """Indica si la respuesta generada fue verificada."""
+
+        return self.verification.status == "verified"

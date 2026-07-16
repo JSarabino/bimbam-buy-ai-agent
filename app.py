@@ -314,20 +314,45 @@ def build_source_rows(
 def render_rag_response(
     response: RagResponse,
 ) -> None:
-    """Muestra la respuesta generada y sus fuentes documentales."""
+    """Muestra la respuesta, su verificación y las fuentes."""
+
+    verification = response.verification
 
     st.markdown("### Respuesta")
 
-    if response.used_context:
+    if verification.status == "verified":
+        st.success(
+            "Respuesta verificada automáticamente contra el "
+            "contexto documental recuperado."
+        )
         st.markdown(
             response.answer
         )
-    else:
+
+    elif verification.status == "rejected":
+        st.error(
+            "La respuesta generada no superó la verificación "
+            "automática y fue reemplazada por un mensaje seguro."
+        )
         st.warning(
             response.answer
         )
 
-    source_column, model_column, context_column = st.columns(3)
+    else:
+        st.info(
+            "No se generó una respuesta con el modelo porque la "
+            "recuperación no encontró evidencia suficiente."
+        )
+        st.warning(
+            response.answer
+        )
+
+    (
+        source_column,
+        status_column,
+        confidence_column,
+        context_column,
+    ) = st.columns(4)
 
     with source_column:
         st.metric(
@@ -335,10 +360,25 @@ def render_rag_response(
             value=len(response.sources),
         )
 
-    with model_column:
+    with status_column:
+        status_labels = {
+            "verified": "Verificada",
+            "rejected": "Rechazada",
+            "not_applicable": "No aplicable",
+        }
+
         st.metric(
-            label="Modelo generativo",
-            value=response.model_name,
+            label="Verificación",
+            value=status_labels.get(
+                verification.status,
+                verification.status,
+            ),
+        )
+
+    with confidence_column:
+        st.metric(
+            label="Confianza",
+            value=f"{verification.confidence:.0%}",
         )
 
     with context_column:
@@ -350,6 +390,55 @@ def render_rag_response(
                 else "No"
             ),
         )
+
+    st.caption(
+        f"Modelo generativo: {response.model_name}"
+    )
+
+    if response.support_contact is not None:
+        st.info(
+            "**Contacto alternativo de demostración:** "
+            f"{response.support_contact.area} — "
+            f"`{response.support_contact.email}`\n\n"
+            "Este contacto es ficticio y no proviene del corpus "
+            "documental."
+        )
+
+    with st.expander(
+        "Ver detalle de la verificación",
+        expanded=verification.status == "rejected",
+    ):
+        st.write(
+            {
+                "Estado": verification.status,
+                "Superó la verificación": verification.passed,
+                "Contenido respaldado": (
+                    verification.semantic_supported
+                ),
+                "Confianza": verification.confidence,
+                "Citas presentes": verification.citations_present,
+                "Fuentes citadas": verification.cited_sources,
+                "Citas inválidas": verification.invalid_citations,
+            }
+        )
+
+        st.write(
+            f"**Explicación:** {verification.explanation}"
+        )
+
+        if verification.unsupported_claims:
+            st.write(
+                "**Afirmaciones no respaldadas:**"
+            )
+
+            for claim in verification.unsupported_claims:
+                st.write(
+                    f"• {claim}"
+                )
+        else:
+            st.caption(
+                "No se detectaron afirmaciones sin respaldo."
+            )
 
     if not response.has_sources:
         return
@@ -422,7 +511,7 @@ def render_rag_response(
                 f"{metadata.get('chunk_id', f'vector-{source.vector_id}')}"
             )
 
-    with st.expander("Ver contexto enviado al modelo"):
+    with st.expander("Ver contexto enviado a generación y verificación"):
         st.code(
             response.retrieval.context,
             language="text",
@@ -500,7 +589,7 @@ def render_rag_section(
 
     if not query_ready:
         st.session_state.pop(
-            "rag_response",
+            "verified_rag_response",
             None,
         )
 
@@ -519,7 +608,7 @@ def render_rag_section(
 
     if submitted:
         st.session_state.pop(
-            "rag_response",
+            "verified_rag_response",
             None,
         )
 
@@ -533,7 +622,7 @@ def render_rag_section(
 
         try:
             with st.spinner(
-                "Recuperando evidencia y generando la respuesta..."
+                "Recuperando evidencia, generando y verificando la respuesta..."
             ):
                 response = answer_question(
                     query,
@@ -541,7 +630,7 @@ def render_rag_section(
                 )
 
             st.session_state[
-                "rag_response"
+                "verified_rag_response"
             ] = response.model_dump()
 
         except (
@@ -554,7 +643,7 @@ def render_rag_section(
             )
 
     stored_response = st.session_state.get(
-        "rag_response"
+        "verified_rag_response"
     )
 
     if stored_response:
@@ -567,8 +656,9 @@ def render_rag_section(
         )
 
     st.caption(
-        "Cada consulta genera un embedding para la pregunta y, cuando "
-        "existe evidencia suficiente, una respuesta con el modelo de chat."
+        "Las consultas con evidencia generan un embedding, una respuesta "
+        "y una verificación automática independiente. Si la respuesta "
+        "no supera el control, se reemplaza por un fallback seguro."
     )
 
 
@@ -601,10 +691,10 @@ def main() -> None:
 
     st.markdown(
         """
-        La cadena RAG ya está implementada. La aplicación transforma la
-        pregunta en un embedding, recupera los fragmentos más relevantes
-        desde FAISS y utiliza Gemini para generar una respuesta sustentada
-        exclusivamente en el contexto documental recuperado.
+        La cadena RAG y su verificación automática ya están implementadas.
+        La aplicación recupera evidencia desde FAISS, genera una respuesta
+        con Gemini y luego comprueba de forma independiente que sus
+        afirmaciones y citas estén respaldadas por el contexto documental.
         """
     )
 
@@ -723,8 +813,8 @@ def main() -> None:
         )
     else:
         st.info(
-            "La clave de Gemini está configurada para generar "
-            "embeddings de consulta y respuestas."
+            "La clave de Gemini está configurada para generar embeddings "
+            "de consulta, respuestas y verificaciones estructuradas."
         )
 
     if index_snapshot:
@@ -876,8 +966,8 @@ def main() -> None:
     )
 
     st.caption(
-        "Siguiente hito: evaluar la calidad del RAG e implementar "
-        "el triaje y el agente con LangGraph."
+        "Siguiente hito: crear el banco de evaluación, medir la calidad "
+        "del RAG y decidir si se necesita reranking antes de LangGraph."
     )
 
 

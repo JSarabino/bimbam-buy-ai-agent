@@ -36,10 +36,27 @@ from bimbam_assistant.infrastructure.gemini_provider import (
     embed_query,
     generate_text,
 )
-
+from bimbam_assistant.application.verification_service import (
+    VerificationError,
+    verify_answer,
+)
+from bimbam_assistant.domain.models import (
+    AnswerVerification,
+    RagResponse,
+    RetrievedChunk,
+    RetrievalResponse,
+    SupportContact,
+)
+from bimbam_assistant.domain.support_contacts import (
+    get_demo_support_contact,
+)
 
 logger = logging.getLogger(__name__)
 
+UNVERIFIED_ANSWER = (
+    "No pude validar automáticamente que la respuesta generada "
+    "esté completamente respaldada por los documentos disponibles."
+)
 
 class RetrievalError(RuntimeError):
     """Error producido durante la recuperación semántica."""
@@ -113,7 +130,7 @@ def answer_question(
     score_threshold: float | None = None,
     filters: Mapping[str, object] | None = None,
 ) -> RagResponse:
-    """Recupera evidencia y genera una respuesta fundamentada."""
+    """Recupera, genera y verifica una respuesta fundamentada."""
 
     settings = get_settings()
 
@@ -124,19 +141,37 @@ def answer_question(
         filters=filters,
     )
 
-    # No se consume el modelo de chat cuando no existe evidencia.
     if not retrieval.has_results:
-        logger.info(
-            "No se invocará el modelo de chat porque la recuperación "
-            "no encontró evidencia suficiente."
+        contact = resolve_support_contact(
+            retrieval
+        )
+
+        verification = AnswerVerification(
+            status="not_applicable",
+            passed=True,
+            semantic_supported=True,
+            confidence=1.0,
+            citations_present=False,
+            cited_sources=[],
+            invalid_citations=[],
+            unsupported_claims=[],
+            explanation=(
+                "No se invocó el modelo generativo porque no "
+                "existía evidencia suficiente."
+            ),
         )
 
         return RagResponse(
             query=retrieval.query,
-            answer=NO_EVIDENCE_ANSWER,
+            answer=append_demo_contact(
+                NO_EVIDENCE_ANSWER,
+                contact,
+            ),
             retrieval=retrieval,
             model_name=settings.gemini_chat_model,
             used_context=False,
+            verification=verification,
+            support_contact=contact,
         )
 
     generation_prompt = build_generation_prompt(
@@ -149,9 +184,15 @@ def answer_question(
     )
 
     try:
-        answer = generate_text(
+        generated_answer = generate_text(
             system_instruction=RAG_SYSTEM_INSTRUCTION,
             user_prompt=generation_prompt,
+        )
+
+        verification = verify_answer(
+            query=retrieval.query,
+            answer=generated_answer,
+            retrieval=retrieval,
         )
 
     except GeminiChatError as error:
@@ -160,12 +201,42 @@ def answer_question(
             f"{error}"
         ) from error
 
+    except VerificationError as error:
+        raise RagGenerationError(
+            "La respuesta fue generada, pero no pudo verificarse: "
+            f"{error}"
+        ) from error
+
+    if not verification.passed:
+        contact = resolve_support_contact(
+            retrieval
+        )
+
+        logger.warning(
+            "La respuesta generada fue rechazada por el verificador."
+        )
+
+        return RagResponse(
+            query=retrieval.query,
+            answer=append_demo_contact(
+                UNVERIFIED_ANSWER,
+                contact,
+            ),
+            retrieval=retrieval,
+            model_name=settings.gemini_chat_model,
+            used_context=True,
+            verification=verification,
+            support_contact=contact,
+        )
+
     return RagResponse(
         query=retrieval.query,
-        answer=answer,
+        answer=generated_answer,
         retrieval=retrieval,
         model_name=settings.gemini_chat_model,
         used_context=True,
+        verification=verification,
+        support_contact=None,
     )
 
 def normalize_query(query: str) -> str:
@@ -371,4 +442,40 @@ def retrieve_documents(
         results=retrieved_chunks,
         context=context,
         filters=normalized_filters,
+    )
+    
+def resolve_support_contact(
+    retrieval: RetrievalResponse,
+) -> SupportContact:
+    """Selecciona el contacto ficticio correspondiente."""
+
+    category = retrieval.filters.get(
+        "category"
+    )
+
+    if not category and retrieval.results:
+        category = retrieval.results[
+            0
+        ].metadata.get(
+            "category"
+        )
+
+    return get_demo_support_contact(
+        str(category)
+        if category
+        else None
+    )
+
+def append_demo_contact(
+    message: str,
+    contact: SupportContact,
+) -> str:
+    """Agrega un contacto ficticio claramente identificado."""
+
+    return (
+        f"{message}\n\n"
+        f"**Canal alternativo de demostración:** "
+        f"{contact.area} — `{contact.email}`.\n\n"
+        "_Este contacto es ficticio y se utiliza únicamente "
+        "para demostrar el comportamiento del agente._"
     )

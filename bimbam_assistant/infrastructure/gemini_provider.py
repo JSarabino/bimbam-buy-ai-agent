@@ -14,9 +14,11 @@ La creación y persistencia del índice vectorial se implementa en faiss_store.p
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Sequence
 from functools import lru_cache
-import time
+from typing import TypeVar
+from pydantic import BaseModel
 
 from langchain_google_genai import (
     ChatGoogleGenerativeAI,
@@ -45,6 +47,11 @@ class GeminiEmbeddingError(RuntimeError):
     
 class GeminiChatError(RuntimeError):
     """Error producido al generar texto con Gemini."""
+    
+StructuredOutputT = TypeVar(
+    "StructuredOutputT",
+    bound=BaseModel,
+)
 
 def _normalize_model_name(model_name: str) -> str:
     """Normaliza el identificador configurado para el modelo.
@@ -296,6 +303,66 @@ def generate_text(
     )
 
     return generated_text
+
+def generate_structured(
+    *,
+    system_instruction: str,
+    user_prompt: str,
+    schema: type[StructuredOutputT],
+) -> StructuredOutputT:
+    """Genera y valida una respuesta estructurada con Gemini."""
+
+    normalized_system_instruction = (
+        system_instruction.strip()
+    )
+
+    normalized_user_prompt = (
+        user_prompt.strip()
+    )
+
+    if not normalized_system_instruction:
+        raise GeminiChatError(
+            "La instrucción del sistema no puede estar vacía."
+        )
+
+    if not normalized_user_prompt:
+        raise GeminiChatError(
+            "El prompt del usuario no puede estar vacío."
+        )
+
+    model = get_chat_model()
+
+    try:
+        structured_model = model.with_structured_output(
+            schema,
+            method="json_schema",
+        )
+
+        response = structured_model.invoke(
+            [
+                (
+                    "system",
+                    normalized_system_instruction,
+                ),
+                (
+                    "human",
+                    normalized_user_prompt,
+                ),
+            ]
+        )
+
+        if isinstance(response, schema):
+            return response
+
+        return schema.model_validate(
+            response
+        )
+
+    except Exception as error:
+        raise GeminiChatError(
+            "Gemini no pudo generar o validar la respuesta "
+            "estructurada."
+        ) from error
 
 def _is_rate_limit_error(error: Exception) -> bool:
     """Indica si el error corresponde a un límite de uso de Gemini."""
