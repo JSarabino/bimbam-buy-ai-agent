@@ -11,10 +11,15 @@ from bimbam_assistant.application.indexing_service import (
     ChunkingError,
     create_chunks,
 )
+from bimbam_assistant.application.rag_service import (
+    RetrievalError,
+    retrieve_documents,
+)
 from bimbam_assistant.core.config import (
     ConfigurationError,
     get_settings,
 )
+from bimbam_assistant.domain.models import RetrievalResponse
 from bimbam_assistant.infrastructure.faiss_store import (
     FaissStoreError,
     load_vector_store,
@@ -31,6 +36,14 @@ INDEX_FILE_NAMES = (
     "documents.json",
     "manifest.json",
 )
+
+CATEGORY_LABELS = {
+    "envios": "Envíos",
+    "garantias": "Garantías",
+    "reembolsos_devoluciones": "Reembolsos y devoluciones",
+    "metodos_pago": "Métodos de pago",
+    "afiliados": "Programa de afiliados",
+}
 
 
 @st.cache_data(show_spinner=False)
@@ -214,6 +227,15 @@ def get_index_files(
     ]
 
 
+def format_category(category: str) -> str:
+    """Devuelve una etiqueta legible para una categoría técnica."""
+
+    return CATEGORY_LABELS.get(
+        category,
+        category.replace("_", " ").title(),
+    )
+
+
 def render_sidebar() -> None:
     """Muestra la configuración pública del proyecto."""
 
@@ -250,6 +272,280 @@ def render_sidebar() -> None:
         )
 
 
+def render_retrieval_results(
+    response: RetrievalResponse,
+) -> None:
+    """Muestra los fragmentos recuperados y su trazabilidad."""
+
+    st.markdown("### Resultados de la recuperación")
+
+    if not response.has_results:
+        st.warning(
+            "No se encontraron fragmentos que superen el umbral "
+            "de similitud configurado."
+        )
+        return
+
+    st.success(
+        f"Se recuperaron {len(response.results)} fragmentos relevantes."
+    )
+
+    if response.filters:
+        readable_filters = {
+            key: (
+                format_category(str(value))
+                if key == "category"
+                else value
+            )
+            for key, value in response.filters.items()
+        }
+
+        st.caption(
+            f"Filtros aplicados: {readable_filters}"
+        )
+
+    summary_rows = []
+
+    for result in response.results:
+        metadata = result.metadata
+
+        summary_rows.append(
+            {
+                "Posición": result.rank,
+                "Documento": metadata.get(
+                    "document_name",
+                    "Documento desconocido",
+                ),
+                "Página": metadata.get(
+                    "page_number",
+                    "N/D",
+                ),
+                "Categoría": format_category(
+                    str(
+                        metadata.get(
+                            "category",
+                            "sin_clasificar",
+                        )
+                    )
+                ),
+                "Similitud": round(
+                    result.score,
+                    4,
+                ),
+            }
+        )
+
+    st.dataframe(
+        summary_rows,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    for result in response.results:
+        metadata = result.metadata
+
+        document_name = str(
+            metadata.get(
+                "document_name",
+                "Documento desconocido",
+            )
+        )
+
+        page_number = metadata.get(
+            "page_number",
+            "N/D",
+        )
+
+        category = format_category(
+            str(
+                metadata.get(
+                    "category",
+                    "sin_clasificar",
+                )
+            )
+        )
+
+        title = (
+            f"{result.rank}. {document_name} · "
+            f"página {page_number} · "
+            f"similitud {result.score:.4f}"
+        )
+
+        with st.expander(
+            title,
+            expanded=result.rank == 1,
+        ):
+            source_column, category_column, score_column = st.columns(3)
+
+            with source_column:
+                st.write(
+                    f"**Página:** {page_number}"
+                )
+
+            with category_column:
+                st.write(
+                    f"**Categoría:** {category}"
+                )
+
+            with score_column:
+                st.write(
+                    f"**Similitud:** {result.score:.4f}"
+                )
+
+            st.markdown(result.page_content)
+
+            st.caption(
+                "Chunk: "
+                f"{metadata.get('chunk_id', f'vector-{result.vector_id}')}"
+            )
+
+    with st.expander("Ver contexto ensamblado para el futuro LLM"):
+        st.code(
+            response.context,
+            language="text",
+        )
+
+
+def render_retrieval_section(
+    *,
+    index_snapshot: dict[str, object] | None,
+) -> None:
+    """Renderiza el formulario y los resultados de búsqueda semántica."""
+
+    settings = get_settings()
+
+    st.subheader("Consulta documental")
+
+    query_ready = bool(
+        index_snapshot
+        and settings.google_api_key_configured
+    )
+
+    available_categories = (
+        sorted(
+            str(category)
+            for category in index_snapshot.get(
+                "categories",
+                [],
+            )
+        )
+        if index_snapshot
+        else []
+    )
+
+    category_options = [
+        "todas",
+        *available_categories,
+    ]
+
+    with st.form(
+        "semantic_retrieval_form",
+        clear_on_submit=False,
+    ):
+        query = st.text_input(
+            label="Escribe una pregunta sobre BimBam Buy",
+            placeholder="Ejemplo: ¿Cuánto tarda un reembolso?",
+            disabled=not query_ready,
+            help=(
+                "La consulta se convierte en un embedding y se compara "
+                "con los 108 fragmentos almacenados en FAISS."
+            ),
+        )
+
+        selected_category = st.selectbox(
+            label="Categoría documental",
+            options=category_options,
+            format_func=(
+                lambda value: (
+                    "Todas las categorías"
+                    if value == "todas"
+                    else format_category(value)
+                )
+            ),
+            disabled=not query_ready,
+            help=(
+                "El filtro se aplica sobre los metadatos de los chunks."
+            ),
+        )
+
+        submitted = st.form_submit_button(
+            label="Buscar fragmentos",
+            type="primary",
+            disabled=not query_ready,
+            use_container_width=True,
+        )
+
+    if not query_ready:
+        st.session_state.pop(
+            "retrieval_response",
+            None,
+        )
+
+        if not index_snapshot:
+            st.info(
+                "Genera y valida el índice FAISS antes de realizar "
+                "consultas semánticas."
+            )
+        elif not settings.google_api_key_configured:
+            st.info(
+                "Configura GOOGLE_API_KEY para generar el embedding "
+                "de cada consulta."
+            )
+
+        return
+
+    if submitted:
+        st.session_state.pop(
+            "retrieval_response",
+            None,
+        )
+
+        filters = (
+            {}
+            if selected_category == "todas"
+            else {
+                "category": selected_category,
+            }
+        )
+
+        try:
+            with st.spinner(
+                "Generando el embedding y buscando en FAISS..."
+            ):
+                response = retrieve_documents(
+                    query,
+                    filters=filters,
+                )
+
+            st.session_state[
+                "retrieval_response"
+            ] = response.model_dump()
+
+        except RetrievalError as error:
+            st.error(
+                "No fue posible realizar la recuperación semántica: "
+                f"{error}"
+            )
+
+    stored_response = st.session_state.get(
+        "retrieval_response"
+    )
+
+    if stored_response:
+        response = RetrievalResponse.model_validate(
+            stored_response
+        )
+
+        render_retrieval_results(
+            response
+        )
+
+    st.caption(
+        "Cada búsqueda genera un único embedding para la pregunta. "
+        "El corpus ya indexado se consulta localmente mediante FAISS."
+    )
+
+
 def main() -> None:
     """Renderiza la pantalla inicial de la aplicación."""
 
@@ -274,11 +570,12 @@ def main() -> None:
 
     st.markdown(
         """
-        La preparación e indexación documental ya están implementadas.
-        Los PDF se procesan en chunks trazables, se convierten en
-        embeddings con Gemini y se almacenan en un índice FAISS local.
-        El siguiente hito es exponer la recuperación semántica y usar
-        los fragmentos recuperados para construir respuestas con fuentes.
+        La preparación, la indexación y la recuperación semántica ya
+        están implementadas. Una pregunta se transforma en embedding,
+        se compara con los vectores almacenados en FAISS y devuelve los
+        fragmentos más relevantes con documento, página y puntuación.
+        El siguiente hito es generar una respuesta final sustentada
+        exclusivamente en ese contexto.
         """
     )
 
@@ -392,8 +689,8 @@ def main() -> None:
     if not settings.google_api_key_configured:
         st.warning(
             "GOOGLE_API_KEY no está configurada. El índice existente "
-            "puede cargarse localmente, pero la clave será necesaria "
-            "para nuevas consultas y para regenerar embeddings."
+            "puede cargarse localmente, pero la clave es necesaria "
+            "para generar el embedding de cada consulta."
         )
     else:
         st.info(
@@ -535,22 +832,13 @@ def main() -> None:
             "y validar el índice."
         )
 
-    st.subheader("Consulta documental")
-
-    st.text_input(
-        label="Escribe una pregunta sobre BimBam Buy",
-        placeholder="Ejemplo: ¿Cuánto tarda un reembolso?",
-        disabled=True,
-        help=(
-            "El campo se habilitará cuando se implemente el servicio "
-            "de recuperación semántica y la cadena RAG."
-        ),
+    render_retrieval_section(
+        index_snapshot=index_snapshot,
     )
 
     st.caption(
-        "Siguiente hito: recuperar los fragmentos más relevantes "
-        f"con k={settings.retrieval_k} y un umbral de "
-        f"{settings.retrieval_score_threshold}."
+        "Siguiente hito: construir la cadena RAG para generar una "
+        "respuesta final sustentada en los fragmentos recuperados."
     )
 
 
