@@ -12,14 +12,15 @@ from bimbam_assistant.application.indexing_service import (
     create_chunks,
 )
 from bimbam_assistant.application.rag_service import (
+    RagGenerationError,
     RetrievalError,
-    retrieve_documents,
+    answer_question,
 )
 from bimbam_assistant.core.config import (
     ConfigurationError,
     get_settings,
 )
-from bimbam_assistant.domain.models import RetrievalResponse
+from bimbam_assistant.domain.models import RagResponse
 from bimbam_assistant.infrastructure.faiss_store import (
     FaissStoreError,
     load_vector_store,
@@ -53,12 +54,7 @@ def build_processing_snapshot(
     chunk_size: int,
     chunk_overlap: int,
 ) -> dict[str, object]:
-    """Procesa el corpus y devuelve datos simples para la interfaz.
-
-    La firma de archivos forma parte de la clave de caché. Cuando un PDF
-    cambia de nombre, tamaño o fecha de modificación, Streamlit vuelve a
-    procesar el corpus automáticamente.
-    """
+    """Procesa el corpus y devuelve datos simples para la interfaz."""
 
     del document_signature
 
@@ -204,7 +200,7 @@ def build_index_snapshot(
 def build_file_signature(
     files: list[Path],
 ) -> tuple[tuple[str, int, int], ...]:
-    """Crea una firma para invalidar la caché cuando cambia un archivo."""
+    """Crea una firma para invalidar la caché al cambiar un archivo."""
 
     return tuple(
         (
@@ -227,7 +223,9 @@ def get_index_files(
     ]
 
 
-def format_category(category: str) -> str:
+def format_category(
+    category: str,
+) -> str:
     """Devuelve una etiqueta legible para una categoría técnica."""
 
     return CATEGORY_LABELS.get(
@@ -259,7 +257,9 @@ def render_sidebar() -> None:
 
         st.divider()
 
-        st.write(f"**Modelo de chat:** {settings.gemini_chat_model}")
+        st.write(
+            f"**Modelo de chat:** {settings.gemini_chat_model}"
+        )
         st.write(
             f"**Modelo de embeddings:** "
             f"{settings.gemini_embedding_model}"
@@ -272,46 +272,19 @@ def render_sidebar() -> None:
         )
 
 
-def render_retrieval_results(
-    response: RetrievalResponse,
-) -> None:
-    """Muestra los fragmentos recuperados y su trazabilidad."""
+def build_source_rows(
+    response: RagResponse,
+) -> list[dict[str, object]]:
+    """Construye el resumen tabular de las fuentes recuperadas."""
 
-    st.markdown("### Resultados de la recuperación")
+    rows: list[dict[str, object]] = []
 
-    if not response.has_results:
-        st.warning(
-            "No se encontraron fragmentos que superen el umbral "
-            "de similitud configurado."
-        )
-        return
+    for source in response.sources:
+        metadata = source.metadata
 
-    st.success(
-        f"Se recuperaron {len(response.results)} fragmentos relevantes."
-    )
-
-    if response.filters:
-        readable_filters = {
-            key: (
-                format_category(str(value))
-                if key == "category"
-                else value
-            )
-            for key, value in response.filters.items()
-        }
-
-        st.caption(
-            f"Filtros aplicados: {readable_filters}"
-        )
-
-    summary_rows = []
-
-    for result in response.results:
-        metadata = result.metadata
-
-        summary_rows.append(
+        rows.append(
             {
-                "Posición": result.rank,
+                "Fuente": source.rank,
                 "Documento": metadata.get(
                     "document_name",
                     "Documento desconocido",
@@ -329,20 +302,68 @@ def render_retrieval_results(
                     )
                 ),
                 "Similitud": round(
-                    result.score,
+                    source.score,
                     4,
                 ),
             }
         )
 
+    return rows
+
+
+def render_rag_response(
+    response: RagResponse,
+) -> None:
+    """Muestra la respuesta generada y sus fuentes documentales."""
+
+    st.markdown("### Respuesta")
+
+    if response.used_context:
+        st.markdown(
+            response.answer
+        )
+    else:
+        st.warning(
+            response.answer
+        )
+
+    source_column, model_column, context_column = st.columns(3)
+
+    with source_column:
+        st.metric(
+            label="Fuentes recuperadas",
+            value=len(response.sources),
+        )
+
+    with model_column:
+        st.metric(
+            label="Modelo generativo",
+            value=response.model_name,
+        )
+
+    with context_column:
+        st.metric(
+            label="Contexto utilizado",
+            value=(
+                "Sí"
+                if response.used_context
+                else "No"
+            ),
+        )
+
+    if not response.has_sources:
+        return
+
+    st.markdown("### Fuentes")
+
     st.dataframe(
-        summary_rows,
+        build_source_rows(response),
         use_container_width=True,
         hide_index=True,
     )
 
-    for result in response.results:
-        metadata = result.metadata
+    for source in response.sources:
+        metadata = source.metadata
 
         document_name = str(
             metadata.get(
@@ -366,18 +387,18 @@ def render_retrieval_results(
         )
 
         title = (
-            f"{result.rank}. {document_name} · "
+            f"Fuente {source.rank}: {document_name} · "
             f"página {page_number} · "
-            f"similitud {result.score:.4f}"
+            f"similitud {source.score:.4f}"
         )
 
         with st.expander(
             title,
-            expanded=result.rank == 1,
+            expanded=source.rank == 1,
         ):
-            source_column, category_column, score_column = st.columns(3)
+            page_column, category_column, score_column = st.columns(3)
 
-            with source_column:
+            with page_column:
                 st.write(
                     f"**Página:** {page_number}"
                 )
@@ -389,28 +410,30 @@ def render_retrieval_results(
 
             with score_column:
                 st.write(
-                    f"**Similitud:** {result.score:.4f}"
+                    f"**Similitud:** {source.score:.4f}"
                 )
 
-            st.markdown(result.page_content)
+            st.markdown(
+                source.page_content
+            )
 
             st.caption(
                 "Chunk: "
-                f"{metadata.get('chunk_id', f'vector-{result.vector_id}')}"
+                f"{metadata.get('chunk_id', f'vector-{source.vector_id}')}"
             )
 
-    with st.expander("Ver contexto ensamblado para el futuro LLM"):
+    with st.expander("Ver contexto enviado al modelo"):
         st.code(
-            response.context,
+            response.retrieval.context,
             language="text",
         )
 
 
-def render_retrieval_section(
+def render_rag_section(
     *,
     index_snapshot: dict[str, object] | None,
 ) -> None:
-    """Renderiza el formulario y los resultados de búsqueda semántica."""
+    """Renderiza el formulario y la respuesta de la cadena RAG."""
 
     settings = get_settings()
 
@@ -439,7 +462,7 @@ def render_retrieval_section(
     ]
 
     with st.form(
-        "semantic_retrieval_form",
+        "rag_question_form",
         clear_on_submit=False,
     ):
         query = st.text_input(
@@ -447,8 +470,8 @@ def render_retrieval_section(
             placeholder="Ejemplo: ¿Cuánto tarda un reembolso?",
             disabled=not query_ready,
             help=(
-                "La consulta se convierte en un embedding y se compara "
-                "con los 108 fragmentos almacenados en FAISS."
+                "La aplicación recupera evidencia de FAISS y genera "
+                "una respuesta utilizando únicamente ese contexto."
             ),
         )
 
@@ -464,12 +487,12 @@ def render_retrieval_section(
             ),
             disabled=not query_ready,
             help=(
-                "El filtro se aplica sobre los metadatos de los chunks."
+                "El filtro restringe la recuperación a una categoría."
             ),
         )
 
         submitted = st.form_submit_button(
-            label="Buscar fragmentos",
+            label="Generar respuesta",
             type="primary",
             disabled=not query_ready,
             use_container_width=True,
@@ -477,26 +500,26 @@ def render_retrieval_section(
 
     if not query_ready:
         st.session_state.pop(
-            "retrieval_response",
+            "rag_response",
             None,
         )
 
         if not index_snapshot:
             st.info(
                 "Genera y valida el índice FAISS antes de realizar "
-                "consultas semánticas."
+                "consultas."
             )
         elif not settings.google_api_key_configured:
             st.info(
-                "Configura GOOGLE_API_KEY para generar el embedding "
-                "de cada consulta."
+                "Configura GOOGLE_API_KEY para generar embeddings "
+                "de consulta y respuestas."
             )
 
         return
 
     if submitted:
         st.session_state.pop(
-            "retrieval_response",
+            "rag_response",
             None,
         )
 
@@ -510,49 +533,54 @@ def render_retrieval_section(
 
         try:
             with st.spinner(
-                "Generando el embedding y buscando en FAISS..."
+                "Recuperando evidencia y generando la respuesta..."
             ):
-                response = retrieve_documents(
+                response = answer_question(
                     query,
                     filters=filters,
                 )
 
             st.session_state[
-                "retrieval_response"
+                "rag_response"
             ] = response.model_dump()
 
-        except RetrievalError as error:
+        except (
+            RetrievalError,
+            RagGenerationError,
+        ) as error:
             st.error(
-                "No fue posible realizar la recuperación semántica: "
+                "No fue posible completar la consulta: "
                 f"{error}"
             )
 
     stored_response = st.session_state.get(
-        "retrieval_response"
+        "rag_response"
     )
 
     if stored_response:
-        response = RetrievalResponse.model_validate(
+        response = RagResponse.model_validate(
             stored_response
         )
 
-        render_retrieval_results(
+        render_rag_response(
             response
         )
 
     st.caption(
-        "Cada búsqueda genera un único embedding para la pregunta. "
-        "El corpus ya indexado se consulta localmente mediante FAISS."
+        "Cada consulta genera un embedding para la pregunta y, cuando "
+        "existe evidencia suficiente, una respuesta con el modelo de chat."
     )
 
 
 def main() -> None:
-    """Renderiza la pantalla inicial de la aplicación."""
+    """Renderiza la aplicación."""
 
     try:
         settings = get_settings()
     except ConfigurationError as error:
-        st.error(f"Error de configuración: {error}")
+        st.error(
+            f"Error de configuración: {error}"
+        )
         return
 
     st.set_page_config(
@@ -562,7 +590,10 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
 
-    st.title(f"🛍️ {settings.app_name}")
+    st.title(
+        f"🛍️ {settings.app_name}"
+    )
+
     st.caption(
         "Agente inteligente para consultar las políticas y los "
         "documentos corporativos de BimBam Buy."
@@ -570,12 +601,10 @@ def main() -> None:
 
     st.markdown(
         """
-        La preparación, la indexación y la recuperación semántica ya
-        están implementadas. Una pregunta se transforma en embedding,
-        se compara con los vectores almacenados en FAISS y devuelve los
-        fragmentos más relevantes con documento, página y puntuación.
-        El siguiente hito es generar una respuesta final sustentada
-        exclusivamente en ese contexto.
+        La cadena RAG ya está implementada. La aplicación transforma la
+        pregunta en un embedding, recupera los fragmentos más relevantes
+        desde FAISS y utiliza Gemini para generar una respuesta sustentada
+        exclusivamente en el contexto documental recuperado.
         """
     )
 
@@ -690,12 +719,12 @@ def main() -> None:
         st.warning(
             "GOOGLE_API_KEY no está configurada. El índice existente "
             "puede cargarse localmente, pero la clave es necesaria "
-            "para generar el embedding de cada consulta."
+            "para consultar Gemini."
         )
     else:
         st.info(
             "La clave de Gemini está configurada para generar "
-            "embeddings de documentos y consultas."
+            "embeddings de consulta y respuestas."
         )
 
     if index_snapshot:
@@ -786,7 +815,9 @@ def main() -> None:
 
     with st.expander("Ver documentos detectados"):
         for pdf_file in pdf_files:
-            st.write(f"• {pdf_file.name}")
+            st.write(
+                f"• {pdf_file.name}"
+            )
 
     st.subheader("Índice vectorial")
 
@@ -801,25 +832,33 @@ def main() -> None:
         with model_column:
             st.metric(
                 label="Modelo de embeddings",
-                value=str(index_snapshot["embedding_model"]),
+                value=str(
+                    index_snapshot["embedding_model"]
+                ),
             )
 
         with dimension_column:
             st.metric(
                 label="Dimensión",
-                value=int(index_snapshot["embedding_dimension"]),
+                value=int(
+                    index_snapshot["embedding_dimension"]
+                ),
             )
 
         with type_column:
             st.metric(
                 label="Tipo de índice",
-                value=str(index_snapshot["index_type"]),
+                value=str(
+                    index_snapshot["index_type"]
+                ),
             )
 
         with metric_column:
             st.metric(
                 label="Métrica",
-                value=str(index_snapshot["distance_metric"]),
+                value=str(
+                    index_snapshot["distance_metric"]
+                ),
             )
 
         with st.expander("Ver manifiesto del índice"):
@@ -832,13 +871,13 @@ def main() -> None:
             "y validar el índice."
         )
 
-    render_retrieval_section(
+    render_rag_section(
         index_snapshot=index_snapshot,
     )
 
     st.caption(
-        "Siguiente hito: construir la cadena RAG para generar una "
-        "respuesta final sustentada en los fragmentos recuperados."
+        "Siguiente hito: evaluar la calidad del RAG e implementar "
+        "el triaje y el agente con LangGraph."
     )
 
 

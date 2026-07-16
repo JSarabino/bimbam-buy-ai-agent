@@ -18,7 +18,10 @@ from collections.abc import Sequence
 from functools import lru_cache
 import time
 
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import (
+    ChatGoogleGenerativeAI,
+    GoogleGenerativeAIEmbeddings,
+)
 
 from bimbam_assistant.core.config import (
     ConfigurationError,
@@ -39,7 +42,9 @@ DEFAULT_RETRY_BASE_SECONDS = 65
 
 class GeminiEmbeddingError(RuntimeError):
     """Error producido durante la generación de embeddings."""
-
+    
+class GeminiChatError(RuntimeError):
+    """Error producido al generar texto con Gemini."""
 
 def _normalize_model_name(model_name: str) -> str:
     """Normaliza el identificador configurado para el modelo.
@@ -175,6 +180,122 @@ def get_embedding_model() -> GoogleGenerativeAIEmbeddings:
     )
 
     return model
+
+@lru_cache(maxsize=1)
+def get_chat_model() -> ChatGoogleGenerativeAI:
+    """Construye y reutiliza el modelo de chat configurado."""
+
+    settings = get_settings()
+
+    api_key = settings.require_google_api_key()
+
+    logger.info(
+        "Proveedor de chat configurado con el modelo %s.",
+        settings.gemini_chat_model,
+    )
+
+    return ChatGoogleGenerativeAI(
+        model=settings.gemini_chat_model,
+        api_key=api_key,
+        temperature=settings.gemini_temperature,
+    )
+
+def _extract_generated_text(
+    content: object,
+) -> str:
+    """Extrae texto de la respuesta devuelta por Gemini."""
+
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        text_parts: list[str] = []
+
+        for block in content:
+            if isinstance(block, str):
+                text_parts.append(
+                    block
+                )
+
+            elif isinstance(block, dict):
+                block_text = block.get(
+                    "text"
+                )
+
+                if isinstance(block_text, str):
+                    text_parts.append(
+                        block_text
+                    )
+
+        return "\n".join(
+            text_parts
+        ).strip()
+
+    return ""
+
+def generate_text(
+    *,
+    system_instruction: str,
+    user_prompt: str,
+) -> str:
+    """Genera una respuesta de texto con Gemini."""
+
+    normalized_system_instruction = (
+        system_instruction.strip()
+    )
+
+    normalized_user_prompt = (
+        user_prompt.strip()
+    )
+
+    if not normalized_system_instruction:
+        raise GeminiChatError(
+            "La instrucción del sistema no puede estar vacía."
+        )
+
+    if not normalized_user_prompt:
+        raise GeminiChatError(
+            "El prompt del usuario no puede estar vacío."
+        )
+
+    model = get_chat_model()
+
+    try:
+        response = model.invoke(
+            [
+                (
+                    "system",
+                    normalized_system_instruction,
+                ),
+                (
+                    "human",
+                    normalized_user_prompt,
+                ),
+            ]
+        )
+
+    except Exception as error:
+        raise GeminiChatError(
+            "Gemini no pudo generar la respuesta. Comprueba "
+            "el modelo configurado, la conexión y los límites "
+            "de uso de la API."
+        ) from error
+
+    generated_text = _extract_generated_text(
+        response.content
+    )
+
+    if not generated_text:
+        raise GeminiChatError(
+            "Gemini devolvió una respuesta sin contenido textual."
+        )
+
+    logger.info(
+        "Respuesta generada con el modelo %s.",
+        get_settings().gemini_chat_model,
+    )
+
+    return generated_text
 
 def _is_rate_limit_error(error: Exception) -> bool:
     """Indica si el error corresponde a un límite de uso de Gemini."""
