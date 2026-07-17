@@ -4,7 +4,7 @@ Agente de inteligencia artificial basado en **RAG** (*Retrieval-Augmented Genera
 
 ## Descripción
 
-BimBam Assistant recupera información desde un corpus corporativo, genera una respuesta con Gemini y ejecuta una verificación independiente antes de mostrarla.
+BimBam Assistant procesa un corpus documental corporativo, recupera los fragmentos más relevantes para cada consulta, genera una respuesta con Gemini y ejecuta una verificación independiente antes de mostrarla.
 
 El asistente cubre consultas sobre:
 
@@ -15,11 +15,11 @@ El asistente cubre consultas sobre:
 - Métodos de pago.
 - Programa de afiliados.
 
-Las respuestas se restringen al contexto documental recuperado y conservan trazabilidad mediante referencias como `[Fuente 1]`, junto con el documento y la página de origen.
+Las respuestas se restringen al contexto documental recuperado y conservan trazabilidad mediante referencias como `[Fuente 1]`, junto con el documento, la página, la categoría y el fragmento de origen.
 
 ## Estado del proyecto
 
-**Fase actual: cadena RAG con verificación automática completada.**
+**Fase actual: interfaz conversacional y monitoreo persistente completados.**
 
 El proyecto ya permite:
 
@@ -33,10 +33,16 @@ El proyecto ya permite:
 - Aplicar búsqueda semántica, `top k`, umbral y filtros.
 - Ensamblar el contexto documental.
 - Generar respuestas con Gemini.
-- Comprobar automáticamente citas y respaldo semántico.
+- Validar automáticamente las citas.
+- Verificar semánticamente el respaldo de la respuesta.
 - Rechazar respuestas no sustentadas.
 - Evitar la generación cuando no existe evidencia suficiente.
-- Mostrar respuesta, verificación, fuentes y contexto en Streamlit.
+- Mantener un historial conversacional durante la sesión.
+- Interpretar preguntas de seguimiento usando las preguntas recientes.
+- Mostrar fuentes y detalles técnicos de forma desplegable.
+- Registrar feedback positivo o negativo por respuesta.
+- Persistir interacciones, errores, tiempos y feedback en SQLite.
+- Mostrar métricas de calidad y posibles vacíos de conocimiento.
 - Ofrecer contactos sintéticos de demostración únicamente durante un fallback.
 
 ### Resultado actual
@@ -72,8 +78,13 @@ El proyecto ya permite:
 | Rechazo de respuestas no respaldadas | Implementado |
 | Fallback sin evidencia | Implementado |
 | Contactos sintéticos de demostración | Implementados |
-| Streamlit | Actualizado |
+| Interfaz conversacional Streamlit | Implementada |
+| Historial durante la sesión | Implementado |
+| Feedback por respuesta | Implementado |
+| Persistencia SQLite | Implementada |
+| Monitoreo de calidad | Implementado |
 | Reranking | Pendiente de evaluación |
+| Actualización automática del índice | Pendiente |
 | Banco de evaluación | Pendiente |
 | Agente con LangGraph | Pendiente |
 | Despliegue en OCI | Pendiente |
@@ -89,6 +100,7 @@ El proyecto ya permite:
 - FAISS CPU.
 - NumPy.
 - Streamlit.
+- SQLite.
 - python-dotenv.
 - Pydantic.
 - Pytest.
@@ -101,8 +113,8 @@ El proyecto ya permite:
 | `core` | Configuración, variables de entorno y rutas |
 | `domain` | Modelos de recuperación, respuesta, verificación y contactos |
 | `application` | Indexación, recuperación, generación y verificación |
-| `infrastructure` | Integraciones con PDF, Gemini y FAISS |
-| `presentation` | Interfaz Streamlit |
+| `infrastructure` | Integraciones con PDF, Gemini, FAISS y SQLite |
+| `presentation` | Interfaz conversacional en Streamlit |
 
 ### Flujo completo
 
@@ -132,6 +144,8 @@ Validación de citas
 Gemini verifica respaldo semántico
  ↓
 Respuesta verificada o fallback seguro
+ ↓
+Feedback y métricas en SQLite
 ```
 
 ## Corpus documental
@@ -174,10 +188,12 @@ bimbam-buy-ai-agent/
 │   └── index_documents.py
 ├── storage/
 │   ├── .gitkeep
-│   └── faiss_index/
-│       ├── index.faiss
-│       ├── documents.json
-│       └── manifest.json
+│   ├── faiss_index/
+│   │   ├── index.faiss
+│   │   ├── documents.json
+│   │   └── manifest.json
+│   └── monitoring/
+│       └── bimbam_quality.db
 ├── bimbam_assistant/
 │   ├── core/
 │   │   └── config.py
@@ -192,7 +208,8 @@ bimbam-buy-ai-agent/
 │   ├── infrastructure/
 │   │   ├── pdf_loader.py
 │   │   ├── gemini_provider.py
-│   │   └── faiss_store.py
+│   │   ├── faiss_store.py
+│   │   └── monitoring_repository.py
 │   └── presentation/
 │       └── streamlit_app.py
 └── tests/
@@ -200,6 +217,8 @@ bimbam-buy-ai-agent/
     ├── test_retrieval.py
     └── test_rag_service.py
 ```
+
+Los directorios `storage/faiss_index/` y `storage/monitoring/` se generan localmente y no deben almacenarse en GitHub.
 
 ## Instalación local
 
@@ -212,9 +231,25 @@ cd bimbam-buy-ai-agent
 
 ### 2. Crear el entorno
 
+#### Windows con Conda
+
 ```powershell
 conda create --prefix .\.venv python=3.11 -y
 conda activate .\.venv
+```
+
+#### Windows con `venv`
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+#### Linux o macOS
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
 ```
 
 ### 3. Instalar dependencias
@@ -227,8 +262,16 @@ python -m pip check
 
 ### 4. Configurar variables
 
+#### Windows
+
 ```powershell
 Copy-Item .env.example .env
+```
+
+#### Linux o macOS
+
+```bash
+cp .env.example .env
 ```
 
 Agregar la clave:
@@ -236,6 +279,8 @@ Agregar la clave:
 ```env
 GOOGLE_API_KEY=tu_clave
 ```
+
+El archivo `.env` es privado y no debe subirse al repositorio.
 
 ### 5. Generar el índice
 
@@ -252,7 +297,7 @@ storage/faiss_index/
 └── manifest.json
 ```
 
-Este directorio está ignorado por Git y debe reconstruirse después de clonar el repositorio.
+Este directorio debe reconstruirse después de clonar el repositorio.
 
 ## Generación RAG
 
@@ -308,7 +353,7 @@ Un segundo llamado estructurado a Gemini compara:
 - La respuesta generada.
 - El contexto documental autorizado.
 
-El verificador devuelve un modelo Pydantic con:
+El verificador devuelve:
 
 - `status`: `verified`, `rejected` o `not_applicable`.
 - `passed`.
@@ -330,7 +375,115 @@ AND no hay citas inválidas
 
 Cuando la validación falla, la respuesta original no se muestra y se reemplaza por un mensaje seguro.
 
-## Fallback
+## Interfaz conversacional
+
+Ejecutar:
+
+```bash
+python -m streamlit run app.py
+```
+
+La aplicación estará disponible normalmente en:
+
+```text
+http://localhost:8501
+```
+
+La interfaz incluye:
+
+- Indicación explícita de que se conversa con un asistente de IA.
+- Mensaje inicial con ejemplos de preguntas.
+- Campo de chat.
+- Filtro opcional por categoría.
+- Historial de preguntas y respuestas durante la sesión.
+- Continuidad básica para preguntas de seguimiento.
+- Respuesta destacada visualmente.
+- Feedback `👍 Útil` y `👎 No útil`.
+- Fuentes, verificación y contexto en paneles desplegables.
+- Botón para iniciar una conversación nueva.
+- Métricas técnicas compactas.
+- Panel de monitoreo de calidad.
+
+Las últimas preguntas ayudan a interpretar seguimientos como:
+
+```text
+Usuario: ¿Cuánto tarda un reembolso?
+Usuario: ¿Y si pagué en cuotas?
+```
+
+Las respuestas anteriores no se usan como evidencia. El sistema vuelve a consultar el corpus para cada pregunta.
+
+## Monitoreo persistente
+
+La aplicación crea automáticamente:
+
+```text
+storage/monitoring/bimbam_quality.db
+```
+
+La base SQLite registra:
+
+- Pregunta original.
+- Consulta contextual utilizada.
+- Categoría.
+- Respuesta final.
+- Resultado de la interacción.
+- Estado y confianza de verificación.
+- Cantidad y resumen de fuentes.
+- Modelo generativo.
+- Tiempo total de respuesta.
+- Feedback positivo o negativo.
+- Errores transitorios.
+
+Los resultados posibles son:
+
+```text
+answered
+no_evidence
+rejected
+error
+```
+
+El panel **Monitoreo de calidad** muestra:
+
+- Consultas registradas.
+- Preguntas sin evidencia.
+- Respuestas rechazadas.
+- Errores.
+- Latencia promedio.
+- Feedback positivo y negativo.
+- Tasa de feedback.
+- Interacciones recientes.
+- Posibles vacíos de conocimiento.
+
+Se consideran posibles vacíos:
+
+- Consultas sin evidencia.
+- Respuestas rechazadas.
+- Errores.
+- Respuestas con feedback negativo.
+
+## Persistencia y privacidad
+
+El historial visual del chat se conserva durante la sesión actual de Streamlit.
+
+Las métricas y el feedback se conservan en SQLite después de cerrar la aplicación. Debido a que pueden incluir preguntas y respuestas, la base local no debe subirse a GitHub.
+
+Agregar en `.gitignore`:
+
+```gitignore
+storage/faiss_index/
+storage/monitoring/
+```
+
+Verificar:
+
+```powershell
+git check-ignore storage/faiss_index/index.faiss
+git check-ignore storage/monitoring/bimbam_quality.db
+```
+
+## Fallback y contactos sintéticos
 
 ### Sin evidencia
 
@@ -338,86 +491,51 @@ Cuando ningún fragmento supera el umbral:
 
 - No se invoca el modelo generativo.
 - No se invoca el verificador.
-- Se devuelve un mensaje explícito de falta de información.
-- El estado de verificación es `not_applicable`.
+- Se devuelve un mensaje explícito.
+- El estado es `not_applicable`.
 
 ### Respuesta rechazada
 
-Cuando el modelo genera contenido sin respaldo suficiente:
+Cuando el modelo genera contenido no respaldado:
 
 - El verificador marca `rejected`.
-- La respuesta generada se descarta.
+- La respuesta se descarta.
 - Se muestra un fallback seguro.
-- Se conservan los detalles técnicos para auditoría.
+- Se registra la interacción para auditoría.
 
-## Contactos sintéticos
-
-Los contactos alternativos utilizan direcciones bajo `example.com` y están definidos en:
-
-```text
-bimbam_assistant/domain/support_contacts.py
-```
-
-Ejemplo:
+Los contactos alternativos usan direcciones bajo `example.com`:
 
 ```text
 postventa-bimbam@example.com
 ```
 
-Reglas de uso:
-
-- Son ficticios.
-- Solo se muestran en fallbacks.
-- No se indexan.
-- No se presentan como información extraída de los documentos.
-- No se citan como fuentes.
-- Deben sustituirse por contactos reales antes de un uso productivo.
-
-## Ejecutar Streamlit
-
-```bash
-python -m streamlit run app.py
-```
-
-La interfaz presenta:
-
-- Estado del corpus y del índice.
-- Pregunta y filtro por categoría.
-- Respuesta final.
-- Estado de verificación.
-- Confianza del verificador.
-- Indicador de uso de contexto.
-- Modelo generativo.
-- Citas válidas e inválidas.
-- Afirmaciones no respaldadas.
-- Explicación de la verificación.
-- Documento, página, categoría y similitud de cada fuente.
-- Contexto utilizado.
-- Contacto ficticio solo cuando se activa un fallback.
+Son ficticios, no se indexan, no se citan como fuentes y deben sustituirse antes de un uso productivo.
 
 ## Consumo de API
 
 Una consulta con evidencia normalmente utiliza:
 
 ```text
-1 solicitud de embedding para la pregunta
-1 solicitud para generar la respuesta
-1 solicitud para verificarla
+1 solicitud de embedding
+1 solicitud de generación
+1 solicitud de verificación
 ```
 
-Una consulta sin evidencia utiliza únicamente el embedding de la pregunta, porque no se ejecutan la generación ni la verificación semántica.
+Una consulta sin evidencia utiliza únicamente el embedding de la pregunta.
+
+Los fallos transitorios de la API quedan registrados en SQLite. El reintento automático específico para la verificación todavía está pendiente.
 
 ## Pruebas manuales realizadas
 
 ### Respuesta válida
 
-La consulta:
+Consulta:
 
 ```text
 ¿Cuánto tarda un reembolso?
 ```
 
-produjo:
+Resultado observado:
 
 ```text
 Estado: verified
@@ -429,40 +547,57 @@ Afirmaciones no respaldadas: []
 
 ### Respuesta falsa
 
-La afirmación de prueba:
+Afirmación de prueba:
 
 ```text
 El reembolso tarda exactamente 90 días calendario
 y se paga en criptomonedas [Fuente 99].
 ```
 
-fue rechazada y el verificador detectó:
+El verificador detectó:
 
 - Plazo no respaldado.
 - Medio de pago inventado.
 - Fuente inexistente.
 
+### Seguimiento conversacional
+
+Secuencia:
+
+```text
+¿Cuánto tarda un reembolso?
+¿Y si pagué en cuotas?
+```
+
+El asistente utilizó las preguntas recientes para interpretar el seguimiento y volvió a recuperar evidencia documental.
+
 ## Seguridad y limitaciones
 
 - `.env` no se almacena en Git.
 - La clave de Gemini no se muestra.
-- El modelo recibe el corpus como contexto, no como instrucciones.
+- El modelo recibe los documentos como contexto, no como instrucciones.
 - Las respuestas no verificadas se descartan.
 - Los contactos sintéticos están explícitamente marcados.
+- La base SQLite local no se sube al repositorio.
 - La verificación con otro LLM reduce el riesgo, pero no constituye una garantía matemática.
 - Cada verificación agrega latencia y consumo de API.
+- El historial completo no se restaura entre sesiones.
+- El pipeline de actualización documental todavía se ejecuta manualmente.
 - El reranking todavía no forma parte del baseline.
 
 ## Próximas etapas
 
-1. Crear el banco de preguntas de evaluación.
-2. Implementar pruebas automáticas de recuperación, citas y fallback.
-3. Medir precisión, fidelidad y tasa de rechazo.
-4. Ajustar el umbral de recuperación y la confianza de verificación.
-5. Decidir si se necesita reranking.
-6. Implementar el triaje y el agente con LangGraph.
-7. Construir y probar Docker.
-8. Desplegar en OCI Compute.
+1. Agregar reintentos automáticos para fallos transitorios de verificación.
+2. Detectar cambios en los PDF mediante firma o hash.
+3. Automatizar la regeneración del índice.
+4. Crear el banco de preguntas de evaluación.
+5. Implementar pruebas automáticas de recuperación, citas y fallback.
+6. Medir precisión, fidelidad, latencia y tasa de rechazo.
+7. Ajustar el umbral y la confianza mínima.
+8. Decidir si se necesita reranking.
+9. Implementar el triaje y el agente con LangGraph.
+10. Construir y probar Docker.
+11. Desplegar en OCI Compute.
 
 ## Alcance actual
 
@@ -476,6 +611,7 @@ PDF
   → generación
   → verificación automática
   → respuesta verificada o fallback
+  → feedback y monitoreo persistente
 ```
 
 ## Autor

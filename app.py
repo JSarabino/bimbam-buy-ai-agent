@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from collections import Counter
+from html import escape
 from pathlib import Path
+from time import perf_counter
+from uuid import uuid4
 
 import streamlit as st
 
@@ -24,6 +27,17 @@ from bimbam_assistant.domain.models import RagResponse
 from bimbam_assistant.infrastructure.faiss_store import (
     FaissStoreError,
     load_vector_store,
+)
+from bimbam_assistant.infrastructure.monitoring_repository import (
+    InteractionRecord,
+    MonitoringRepositoryError,
+    get_content_gap_questions,
+    get_monitoring_database_path,
+    get_quality_summary,
+    get_recent_interactions,
+    initialize_monitoring_database,
+    save_interaction,
+    update_interaction_feedback,
 )
 from bimbam_assistant.infrastructure.pdf_loader import (
     PdfLoadingError,
@@ -234,6 +248,79 @@ def format_category(
     )
 
 
+
+def render_global_styles() -> None:
+    """Aplica ajustes visuales ligeros a la interfaz."""
+
+    st.markdown(
+        """
+        <style>
+        .compact-metric-card {
+            padding: 0.55rem 0.7rem;
+            border: 1px solid rgba(128, 128, 128, 0.22);
+            border-radius: 0.65rem;
+            min-height: 4.2rem;
+            background: rgba(128, 128, 128, 0.035);
+        }
+
+        .compact-metric-label {
+            margin: 0;
+            font-size: 0.76rem;
+            line-height: 1.15;
+            opacity: 0.72;
+        }
+
+        .compact-metric-value {
+            margin: 0.2rem 0 0;
+            font-size: 1.35rem;
+            line-height: 1.15;
+            font-weight: 600;
+            overflow-wrap: anywhere;
+        }
+
+        .assistant-welcome {
+            padding: 1rem 1.1rem;
+            border: 1px solid rgba(128, 128, 128, 0.22);
+            border-radius: 0.8rem;
+            background: rgba(128, 128, 128, 0.04);
+        }
+
+        .answer-focus-label {
+            margin-bottom: 0.35rem;
+            font-size: 0.82rem;
+            font-weight: 600;
+            opacity: 0.75;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        div[data-testid="stChatMessage"] {
+            padding-top: 0.55rem;
+            padding-bottom: 0.55rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_compact_metric(
+    *,
+    label: str,
+    value: object,
+) -> None:
+    """Muestra una métrica compacta para los paneles técnicos."""
+
+    st.markdown(
+        (
+            '<div class="compact-metric-card">'
+            f'<p class="compact-metric-label">{escape(label)}</p>'
+            f'<p class="compact-metric-value">{escape(str(value))}</p>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
 def render_sidebar() -> None:
     """Muestra la configuración pública del proyecto."""
 
@@ -311,222 +398,793 @@ def build_source_rows(
     return rows
 
 
+
+MAX_CONVERSATION_CONTEXT_TURNS = 3
+
+
+def initialize_conversation_state() -> None:
+    """Inicializa el historial y elimina estados incompatibles anteriores."""
+
+    st.session_state.setdefault(
+        "conversation_turns",
+        [],
+    )
+
+    st.session_state.setdefault(
+        "monitoring_session_id",
+        uuid4().hex,
+    )
+
+    st.session_state.pop(
+        "verified_rag_response",
+        None,
+    )
+
+
+def clear_conversation() -> None:
+    """Elimina el historial de la sesión actual."""
+
+    st.session_state["conversation_turns"] = []
+
+
+def build_contextual_query(
+    current_query: str,
+    turns: list[dict[str, object]],
+) -> str:
+    """Añade las preguntas recientes para resolver seguimientos breves.
+
+    Los mensajes anteriores ayudan a recuperar documentos para preguntas
+    como "¿y qué documentos necesito?". Las respuestas previas no se usan
+    como fuente: la evidencia autorizada continúa siendo el corpus.
+    """
+
+    previous_questions = [
+        str(turn.get("question", "")).strip()
+        for turn in turns[-MAX_CONVERSATION_CONTEXT_TURNS:]
+        if str(turn.get("question", "")).strip()
+    ]
+
+    if not previous_questions:
+        return current_query
+
+    history = "\n".join(
+        f"- {question}"
+        for question in previous_questions
+    )
+
+    return (
+        "Pregunta actual:\n"
+        f"{current_query}\n\n"
+        "Preguntas recientes de esta conversación, utilizadas solo "
+        "para interpretar referencias o seguimientos:\n"
+        f"{history}"
+    )
+
+
+def update_turn_feedback(
+    turn_id: str,
+    rating: str,
+) -> None:
+    """Registra feedback en la sesión y en SQLite."""
+
+    turns = list(
+        st.session_state.get(
+            "conversation_turns",
+            [],
+        )
+    )
+
+    for turn in turns:
+        if turn.get("id") == turn_id:
+            turn["feedback"] = rating
+            break
+
+    st.session_state["conversation_turns"] = turns
+
+    try:
+        update_interaction_feedback(
+            turn_id,
+            rating,
+        )
+
+        st.session_state.pop(
+            "monitoring_warning",
+            None,
+        )
+
+    except MonitoringRepositoryError as error:
+        st.session_state[
+            "monitoring_warning"
+        ] = str(error)
+
+
+def get_feedback_counts() -> tuple[int, int]:
+    """Cuenta las valoraciones registradas en la sesión."""
+
+    turns = st.session_state.get(
+        "conversation_turns",
+        [],
+    )
+
+    positive = sum(
+        turn.get("feedback") == "positive"
+        for turn in turns
+    )
+
+    negative = sum(
+        turn.get("feedback") == "negative"
+        for turn in turns
+    )
+
+    return positive, negative
+
+
+def render_feedback_controls(
+    *,
+    turn_id: str,
+    current_feedback: str | None,
+) -> None:
+    """Muestra los botones de valoración asociados a una respuesta."""
+
+    st.markdown("#### ¿Esta respuesta fue útil?")
+
+    positive_column, negative_column, status_column = st.columns(
+        [1, 1, 3]
+    )
+
+    with positive_column:
+        positive_clicked = st.button(
+            "👍 Útil",
+            key=f"positive_feedback_{turn_id}",
+            type=(
+                "primary"
+                if current_feedback == "positive"
+                else "secondary"
+            ),
+            use_container_width=True,
+        )
+
+    with negative_column:
+        negative_clicked = st.button(
+            "👎 No útil",
+            key=f"negative_feedback_{turn_id}",
+            type=(
+                "primary"
+                if current_feedback == "negative"
+                else "secondary"
+            ),
+            use_container_width=True,
+        )
+
+    with status_column:
+        if current_feedback == "positive":
+            st.success(
+                "Retroalimentación positiva registrada en esta sesión."
+            )
+        elif current_feedback == "negative":
+            st.warning(
+                "Retroalimentación negativa registrada en esta sesión."
+            )
+        else:
+            st.caption(
+                "La valoración se conserva mientras esta sesión siga activa."
+            )
+
+    if positive_clicked:
+        update_turn_feedback(
+            turn_id,
+            "positive",
+        )
+        st.rerun()
+
+    if negative_clicked:
+        update_turn_feedback(
+            turn_id,
+            "negative",
+        )
+        st.rerun()
+
+
+def render_conversation_history() -> None:
+    """Presenta todas las preguntas y respuestas de la sesión."""
+
+    turns = st.session_state.get(
+        "conversation_turns",
+        [],
+    )
+
+    if not turns:
+        with st.chat_message("assistant"):
+            st.markdown(
+                """
+                <div class="assistant-welcome">
+                <strong>¡Hola! Soy BimBam Assistant.</strong><br><br>
+                Puedo ayudarte a consultar las políticas y documentos
+                corporativos de BimBam Buy. Por ejemplo:
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            st.markdown(
+                """
+                - ¿Cuánto tarda un reembolso?
+                - ¿Qué evidencia necesito para solicitar una garantía?
+                - ¿Cuáles son los tiempos estimados de envío?
+                - ¿Qué hago si mi pago fue rechazado?
+                - ¿Cómo funciona el programa de afiliados?
+                """
+            )
+
+            st.caption(
+                "Las respuestas son generadas por inteligencia artificial "
+                "y se acompañan de sus fuentes documentales."
+            )
+
+        return
+
+    for turn in turns:
+        question = str(
+            turn.get(
+                "question",
+                "",
+            )
+        )
+
+        category = str(
+            turn.get(
+                "category",
+                "todas",
+            )
+        )
+
+        with st.chat_message("user"):
+            st.markdown(
+                question
+            )
+
+            st.caption(
+                "Categoría: "
+                + (
+                    "Todas las categorías"
+                    if category == "todas"
+                    else format_category(category)
+                )
+            )
+
+        response_data = turn.get(
+            "response"
+        )
+
+        if not isinstance(response_data, dict):
+            continue
+
+        response = RagResponse.model_validate(
+            response_data
+        )
+
+        with st.chat_message("assistant"):
+            render_rag_response(
+                response,
+                turn_id=str(turn["id"]),
+                current_feedback=(
+                    str(turn["feedback"])
+                    if turn.get("feedback")
+                    else None
+                ),
+            )
+
+
 def render_rag_response(
     response: RagResponse,
+    *,
+    turn_id: str,
+    current_feedback: str | None,
 ) -> None:
-    """Muestra la respuesta, su verificación y las fuentes."""
+    """Muestra primero la respuesta y deja la trazabilidad como detalle."""
 
     verification = response.verification
 
-    st.markdown("### Respuesta")
+    status_messages = {
+        "verified": (
+            "✅ Respuesta verificada automáticamente contra "
+            "el contexto documental."
+        ),
+        "rejected": (
+            "⚠️ La respuesta generada fue rechazada y sustituida "
+            "por un mensaje seguro."
+        ),
+        "not_applicable": (
+            "ℹ️ No se generó una respuesta con el modelo porque "
+            "no se encontró evidencia suficiente."
+        ),
+    }
 
-    if verification.status == "verified":
-        st.success(
-            "Respuesta verificada automáticamente contra el "
-            "contexto documental recuperado."
+    with st.container(border=True):
+        st.markdown(
+            '<div class="answer-focus-label">Respuesta de BimBam Assistant</div>',
+            unsafe_allow_html=True,
         )
+
         st.markdown(
             response.answer
         )
 
-    elif verification.status == "rejected":
-        st.error(
-            "La respuesta generada no superó la verificación "
-            "automática y fue reemplazada por un mensaje seguro."
-        )
-        st.warning(
-            response.answer
-        )
-
-    else:
-        st.info(
-            "No se generó una respuesta con el modelo porque la "
-            "recuperación no encontró evidencia suficiente."
-        )
-        st.warning(
-            response.answer
-        )
-
-    (
-        source_column,
-        status_column,
-        confidence_column,
-        context_column,
-    ) = st.columns(4)
-
-    with source_column:
-        st.metric(
-            label="Fuentes recuperadas",
-            value=len(response.sources),
-        )
-
-    with status_column:
-        status_labels = {
-            "verified": "Verificada",
-            "rejected": "Rechazada",
-            "not_applicable": "No aplicable",
-        }
-
-        st.metric(
-            label="Verificación",
-            value=status_labels.get(
+        st.caption(
+            status_messages.get(
                 verification.status,
                 verification.status,
-            ),
+            )
         )
 
-    with confidence_column:
-        st.metric(
-            label="Confianza",
-            value=f"{verification.confidence:.0%}",
-        )
-
-    with context_column:
-        st.metric(
-            label="Contexto utilizado",
-            value=(
-                "Sí"
-                if response.used_context
-                else "No"
-            ),
-        )
-
-    st.caption(
-        f"Modelo generativo: {response.model_name}"
+    render_feedback_controls(
+        turn_id=turn_id,
+        current_feedback=current_feedback,
     )
-
-    if response.support_contact is not None:
-        st.info(
-            "**Contacto alternativo de demostración:** "
-            f"{response.support_contact.area} — "
-            f"`{response.support_contact.email}`\n\n"
-            "Este contacto es ficticio y no proviene del corpus "
-            "documental."
-        )
 
     with st.expander(
-        "Ver detalle de la verificación",
+        "Ver fuentes, verificación y detalles técnicos",
         expanded=verification.status == "rejected",
     ):
-        st.write(
-            {
-                "Estado": verification.status,
-                "Superó la verificación": verification.passed,
-                "Contenido respaldado": (
-                    verification.semantic_supported
-                ),
-                "Confianza": verification.confidence,
-                "Citas presentes": verification.citations_present,
-                "Fuentes citadas": verification.cited_sources,
-                "Citas inválidas": verification.invalid_citations,
+        (
+            source_column,
+            status_column,
+            confidence_column,
+            context_column,
+        ) = st.columns(4)
+
+        with source_column:
+            st.metric(
+                label="Fuentes",
+                value=len(response.sources),
+            )
+
+        with status_column:
+            status_labels = {
+                "verified": "Verificada",
+                "rejected": "Rechazada",
+                "not_applicable": "No aplicable",
             }
-        )
 
-        st.write(
-            f"**Explicación:** {verification.explanation}"
-        )
-
-        if verification.unsupported_claims:
-            st.write(
-                "**Afirmaciones no respaldadas:**"
+            st.metric(
+                label="Verificación",
+                value=status_labels.get(
+                    verification.status,
+                    verification.status,
+                ),
             )
 
-            for claim in verification.unsupported_claims:
-                st.write(
-                    f"• {claim}"
-                )
-        else:
-            st.caption(
-                "No se detectaron afirmaciones sin respaldo."
+        with confidence_column:
+            st.metric(
+                label="Confianza",
+                value=f"{verification.confidence:.0%}",
             )
 
-    if not response.has_sources:
-        return
-
-    st.markdown("### Fuentes")
-
-    st.dataframe(
-        build_source_rows(response),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    for source in response.sources:
-        metadata = source.metadata
-
-        document_name = str(
-            metadata.get(
-                "document_name",
-                "Documento desconocido",
+        with context_column:
+            st.metric(
+                label="Usó contexto",
+                value=(
+                    "Sí"
+                    if response.used_context
+                    else "No"
+                ),
             )
+
+        st.caption(
+            f"Modelo generativo: {response.model_name}"
         )
 
-        page_number = metadata.get(
-            "page_number",
-            "N/D",
-        )
-
-        category = format_category(
-            str(
-                metadata.get(
-                    "category",
-                    "sin_clasificar",
-                )
+        if response.support_contact is not None:
+            st.info(
+                "**Contacto alternativo de demostración:** "
+                f"{response.support_contact.area} — "
+                f"`{response.support_contact.email}`\n\n"
+                "Este contacto es ficticio y no proviene del corpus "
+                "documental."
             )
-        )
-
-        title = (
-            f"Fuente {source.rank}: {document_name} · "
-            f"página {page_number} · "
-            f"similitud {source.score:.4f}"
-        )
 
         with st.expander(
-            title,
-            expanded=source.rank == 1,
+            "Detalle de la verificación",
+            expanded=verification.status == "rejected",
         ):
-            page_column, category_column, score_column = st.columns(3)
+            st.write(
+                {
+                    "Estado": verification.status,
+                    "Superó la verificación": verification.passed,
+                    "Contenido respaldado": (
+                        verification.semantic_supported
+                    ),
+                    "Confianza": verification.confidence,
+                    "Citas presentes": verification.citations_present,
+                    "Fuentes citadas": verification.cited_sources,
+                    "Citas inválidas": verification.invalid_citations,
+                }
+            )
 
-            with page_column:
+            st.write(
+                f"**Explicación:** {verification.explanation}"
+            )
+
+            if verification.unsupported_claims:
                 st.write(
-                    f"**Página:** {page_number}"
+                    "**Afirmaciones no respaldadas:**"
                 )
 
-            with category_column:
-                st.write(
-                    f"**Categoría:** {category}"
+                for claim in verification.unsupported_claims:
+                    st.write(
+                        f"• {claim}"
+                    )
+            else:
+                st.caption(
+                    "No se detectaron afirmaciones sin respaldo."
                 )
 
-            with score_column:
-                st.write(
-                    f"**Similitud:** {source.score:.4f}"
+        if response.has_sources:
+            st.markdown("#### Fuentes documentales")
+
+            st.dataframe(
+                build_source_rows(response),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            for source in response.sources:
+                metadata = source.metadata
+
+                document_name = str(
+                    metadata.get(
+                        "document_name",
+                        "Documento desconocido",
+                    )
+                )
+
+                page_number = metadata.get(
+                    "page_number",
+                    "N/D",
+                )
+
+                category = format_category(
+                    str(
+                        metadata.get(
+                            "category",
+                            "sin_clasificar",
+                        )
+                    )
+                )
+
+                title = (
+                    f"Fuente {source.rank}: {document_name} · "
+                    f"página {page_number} · "
+                    f"similitud {source.score:.4f}"
+                )
+
+                with st.expander(
+                    title,
+                    expanded=False,
+                ):
+                    (
+                        page_column,
+                        category_column,
+                        score_column,
+                    ) = st.columns(3)
+
+                    with page_column:
+                        st.write(
+                            f"**Página:** {page_number}"
+                        )
+
+                    with category_column:
+                        st.write(
+                            f"**Categoría:** {category}"
+                        )
+
+                    with score_column:
+                        st.write(
+                            f"**Similitud:** {source.score:.4f}"
+                        )
+
+                    st.markdown(
+                        source.page_content
+                    )
+
+                    st.caption(
+                        "Chunk: "
+                        f"{metadata.get('chunk_id', f'vector-{source.vector_id}')}"
+                    )
+
+            with st.expander(
+                "Contexto enviado a generación y verificación"
+            ):
+                st.code(
+                    response.retrieval.context,
+                    language="text",
+                )
+
+
+
+def determine_interaction_outcome(
+    response: RagResponse,
+) -> str:
+    """Clasifica el resultado para las métricas de calidad."""
+
+    if not response.used_context:
+        return "no_evidence"
+
+    if response.verification.status == "rejected":
+        return "rejected"
+
+    return "answered"
+
+
+def build_persisted_sources(
+    response: RagResponse,
+) -> list[dict[str, object]]:
+    """Reduce las fuentes a los campos útiles para auditoría."""
+
+    return [
+        {
+            "rank": source.rank,
+            "document_name": source.metadata.get(
+                "document_name",
+                "Documento desconocido",
+            ),
+            "page_number": source.metadata.get(
+                "page_number",
+            ),
+            "category": source.metadata.get(
+                "category",
+            ),
+            "score": source.score,
+        }
+        for source in response.sources
+    ]
+
+
+def persist_successful_interaction(
+    *,
+    interaction_id: str,
+    question: str,
+    contextual_query: str,
+    category: str,
+    response: RagResponse,
+    latency_ms: int,
+) -> None:
+    """Guarda una respuesta final y sus métricas."""
+
+    save_interaction(
+        InteractionRecord(
+            interaction_id=interaction_id,
+            session_id=str(
+                st.session_state["monitoring_session_id"]
+            ),
+            question=question,
+            contextual_query=contextual_query,
+            category=category,
+            answer=response.answer,
+            outcome=determine_interaction_outcome(
+                response
+            ),
+            verification_status=(
+                response.verification.status
+            ),
+            verification_confidence=(
+                response.verification.confidence
+            ),
+            used_context=response.used_context,
+            source_count=len(
+                response.sources
+            ),
+            model_name=response.model_name,
+            latency_ms=latency_ms,
+            sources=build_persisted_sources(
+                response
+            ),
+        )
+    )
+
+
+def persist_failed_interaction(
+    *,
+    interaction_id: str,
+    question: str,
+    contextual_query: str,
+    category: str,
+    latency_ms: int,
+    error: Exception,
+) -> None:
+    """Registra un fallo para incorporarlo al monitoreo."""
+
+    settings = get_settings()
+
+    save_interaction(
+        InteractionRecord(
+            interaction_id=interaction_id,
+            session_id=str(
+                st.session_state["monitoring_session_id"]
+            ),
+            question=question,
+            contextual_query=contextual_query,
+            category=category,
+            answer="",
+            outcome="error",
+            verification_status="error",
+            verification_confidence=0.0,
+            used_context=False,
+            source_count=0,
+            model_name=settings.gemini_chat_model,
+            latency_ms=latency_ms,
+            sources=[],
+            error_message=str(error),
+        )
+    )
+
+
+def render_quality_monitoring() -> None:
+    """Muestra métricas persistentes sin competir con el chat."""
+
+    with st.expander(
+        "Monitoreo de calidad",
+        expanded=False,
+    ):
+        try:
+            summary = get_quality_summary()
+
+            (
+                total_column,
+                unanswered_column,
+                rejected_column,
+                latency_column,
+            ) = st.columns(4)
+
+            with total_column:
+                render_compact_metric(
+                    label="Consultas registradas",
+                    value=summary[
+                        "total_interactions"
+                    ],
+                )
+
+            with unanswered_column:
+                render_compact_metric(
+                    label="Sin evidencia",
+                    value=summary[
+                        "no_evidence"
+                    ],
+                )
+
+            with rejected_column:
+                render_compact_metric(
+                    label="Respuestas rechazadas",
+                    value=summary[
+                        "rejected"
+                    ],
+                )
+
+            with latency_column:
+                render_compact_metric(
+                    label="Latencia promedio",
+                    value=(
+                        f"{summary['average_latency_ms'] / 1000:.2f} s"
+                    ),
+                )
+
+            (
+                positive_column,
+                negative_column,
+                feedback_rate_column,
+                error_column,
+            ) = st.columns(4)
+
+            with positive_column:
+                render_compact_metric(
+                    label="Feedback positivo",
+                    value=summary[
+                        "positive_feedback"
+                    ],
+                )
+
+            with negative_column:
+                render_compact_metric(
+                    label="Feedback negativo",
+                    value=summary[
+                        "negative_feedback"
+                    ],
+                )
+
+            with feedback_rate_column:
+                render_compact_metric(
+                    label="Tasa de feedback",
+                    value=(
+                        f"{summary['feedback_rate']:.0%}"
+                    ),
+                )
+
+            with error_column:
+                render_compact_metric(
+                    label="Errores registrados",
+                    value=summary[
+                        "errors"
+                    ],
                 )
 
             st.markdown(
-                source.page_content
+                "#### Interacciones recientes"
             )
+
+            recent_interactions = get_recent_interactions(
+                limit=15
+            )
+
+            if recent_interactions:
+                st.dataframe(
+                    recent_interactions,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption(
+                    "Todavía no hay interacciones persistidas."
+                )
+
+            st.markdown(
+                "#### Posibles vacíos de conocimiento"
+            )
+
+            content_gaps = get_content_gap_questions(
+                limit=15
+            )
+
+            if content_gaps:
+                st.dataframe(
+                    content_gaps,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.caption(
+                    "No se han registrado preguntas sin evidencia, "
+                    "rechazos, errores o feedback negativo."
+                )
 
             st.caption(
-                "Chunk: "
-                f"{metadata.get('chunk_id', f'vector-{source.vector_id}')}"
+                "Base local: "
+                f"`{get_monitoring_database_path()}`"
             )
 
-    with st.expander("Ver contexto enviado a generación y verificación"):
-        st.code(
-            response.retrieval.context,
-            language="text",
-        )
-
+        except MonitoringRepositoryError as error:
+            st.warning(
+                "El monitoreo persistente no está disponible: "
+                f"{error}"
+            )
 
 def render_rag_section(
     *,
     index_snapshot: dict[str, object] | None,
 ) -> None:
-    """Renderiza el formulario y la respuesta de la cadena RAG."""
+    """Renderiza el chat, el historial y las respuestas RAG."""
 
     settings = get_settings()
 
-    st.subheader("Consulta documental")
+    initialize_conversation_state()
+
+    st.subheader("Chat documental")
+
+    monitoring_warning = st.session_state.pop(
+        "monitoring_warning",
+        None,
+    )
+
+    if monitoring_warning:
+        st.warning(
+            "La respuesta sigue disponible, pero no se pudo "
+            f"persistir una métrica: {monitoring_warning}"
+        )
+
+    st.info(
+        "Estás conversando con un asistente de inteligencia artificial, "
+        "no con una persona. Verifica la respuesta en las fuentes "
+        "documentales mostradas."
+    )
 
     query_ready = bool(
         index_snapshot
@@ -550,20 +1208,11 @@ def render_rag_section(
         *available_categories,
     ]
 
-    with st.form(
-        "rag_question_form",
-        clear_on_submit=False,
-    ):
-        query = st.text_input(
-            label="Escribe una pregunta sobre BimBam Buy",
-            placeholder="Ejemplo: ¿Cuánto tarda un reembolso?",
-            disabled=not query_ready,
-            help=(
-                "La aplicación recupera evidencia de FAISS y genera "
-                "una respuesta utilizando únicamente ese contexto."
-            ),
-        )
+    control_column, clear_column = st.columns(
+        [4, 1]
+    )
 
+    with control_column:
         selected_category = st.selectbox(
             label="Categoría documental",
             options=category_options,
@@ -578,38 +1227,85 @@ def render_rag_section(
             help=(
                 "El filtro restringe la recuperación a una categoría."
             ),
+            key="chat_category",
         )
 
-        submitted = st.form_submit_button(
-            label="Generar respuesta",
-            type="primary",
-            disabled=not query_ready,
+    with clear_column:
+        st.write("")
+        st.write("")
+
+        clear_clicked = st.button(
+            "Nueva conversación",
             use_container_width=True,
+            disabled=not bool(
+                st.session_state.get(
+                    "conversation_turns",
+                    [],
+                )
+            ),
         )
+
+    if clear_clicked:
+        clear_conversation()
+        st.rerun()
+
+    positive_count, negative_count = get_feedback_counts()
+
+    history_column, positive_column, negative_column = st.columns(3)
+
+    with history_column:
+        st.metric(
+            label="Turnos en la sesión",
+            value=len(
+                st.session_state.get(
+                    "conversation_turns",
+                    [],
+                )
+            ),
+        )
+
+    with positive_column:
+        st.metric(
+            label="Respuestas útiles",
+            value=positive_count,
+        )
+
+    with negative_column:
+        st.metric(
+            label="Respuestas no útiles",
+            value=negative_count,
+        )
+
+    render_conversation_history()
 
     if not query_ready:
-        st.session_state.pop(
-            "verified_rag_response",
-            None,
-        )
-
         if not index_snapshot:
-            st.info(
+            st.warning(
                 "Genera y valida el índice FAISS antes de realizar "
                 "consultas."
             )
         elif not settings.google_api_key_configured:
-            st.info(
-                "Configura GOOGLE_API_KEY para generar embeddings "
-                "de consulta y respuestas."
+            st.warning(
+                "Configura GOOGLE_API_KEY para generar embeddings, "
+                "respuestas y verificaciones."
             )
 
-        return
+    prompt = st.chat_input(
+        "Escribe una pregunta sobre BimBam Buy",
+        disabled=not query_ready,
+    )
 
-    if submitted:
-        st.session_state.pop(
-            "verified_rag_response",
-            None,
+    if prompt:
+        turns = list(
+            st.session_state.get(
+                "conversation_turns",
+                [],
+            )
+        )
+
+        contextual_query = build_contextual_query(
+            prompt,
+            turns,
         )
 
         filters = (
@@ -620,45 +1316,97 @@ def render_rag_section(
             }
         )
 
+        interaction_id = uuid4().hex
+        started_at = perf_counter()
+
         try:
             with st.spinner(
-                "Recuperando evidencia, generando y verificando la respuesta..."
+                "Recuperando evidencia, generando y verificando "
+                "la respuesta..."
             ):
                 response = answer_question(
-                    query,
+                    contextual_query,
                     filters=filters,
                 )
 
+            latency_ms = round(
+                (
+                    perf_counter()
+                    - started_at
+                )
+                * 1000
+            )
+
+            try:
+                persist_successful_interaction(
+                    interaction_id=interaction_id,
+                    question=prompt,
+                    contextual_query=contextual_query,
+                    category=selected_category,
+                    response=response,
+                    latency_ms=latency_ms,
+                )
+
+            except MonitoringRepositoryError as error:
+                st.session_state[
+                    "monitoring_warning"
+                ] = str(error)
+
+            turns.append(
+                {
+                    "id": interaction_id,
+                    "question": prompt,
+                    "category": selected_category,
+                    "response": response.model_dump(),
+                    "feedback": None,
+                }
+            )
+
             st.session_state[
-                "verified_rag_response"
-            ] = response.model_dump()
+                "conversation_turns"
+            ] = turns
+
+            st.rerun()
 
         except (
             RetrievalError,
             RagGenerationError,
         ) as error:
+            latency_ms = round(
+                (
+                    perf_counter()
+                    - started_at
+                )
+                * 1000
+            )
+
+            try:
+                persist_failed_interaction(
+                    interaction_id=interaction_id,
+                    question=prompt,
+                    contextual_query=contextual_query,
+                    category=selected_category,
+                    latency_ms=latency_ms,
+                    error=error,
+                )
+
+            except MonitoringRepositoryError as monitoring_error:
+                st.session_state[
+                    "monitoring_warning"
+                ] = str(
+                    monitoring_error
+                )
+
             st.error(
                 "No fue posible completar la consulta: "
                 f"{error}"
             )
 
-    stored_response = st.session_state.get(
-        "verified_rag_response"
-    )
-
-    if stored_response:
-        response = RagResponse.model_validate(
-            stored_response
-        )
-
-        render_rag_response(
-            response
-        )
-
     st.caption(
-        "Las consultas con evidencia generan un embedding, una respuesta "
-        "y una verificación automática independiente. Si la respuesta "
-        "no supera el control, se reemplaza por un fallback seguro."
+        "El historial y la retroalimentación se conservan durante "
+        "la sesión actual. Las preguntas recientes ayudan a interpretar "
+        "seguimientos breves, pero las respuestas continúan sustentándose "
+        "exclusivamente en los documentos recuperados."
     )
 
 
@@ -680,21 +1428,30 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
 
+    render_global_styles()
+
+    try:
+        initialize_monitoring_database()
+    except MonitoringRepositoryError as error:
+        st.session_state[
+            "monitoring_warning"
+        ] = str(error)
+
     st.title(
         f"🛍️ {settings.app_name}"
     )
 
     st.caption(
-        "Agente inteligente para consultar las políticas y los "
-        "documentos corporativos de BimBam Buy."
+        "Asistente de inteligencia artificial para consultar las "
+        "políticas y los documentos corporativos de BimBam Buy."
     )
 
     st.markdown(
         """
-        La cadena RAG y su verificación automática ya están implementadas.
-        La aplicación recupera evidencia desde FAISS, genera una respuesta
-        con Gemini y luego comprueba de forma independiente que sus
-        afirmaciones y citas estén respaldadas por el contexto documental.
+        La cadena RAG, la verificación automática y la interfaz
+        conversacional ya están implementadas. La aplicación conserva el
+        historial durante la sesión, muestra las fuentes de cada respuesta
+        y permite registrar retroalimentación positiva o negativa.
         """
     )
 
@@ -757,25 +1514,25 @@ def main() -> None:
     ) = st.columns(5)
 
     with document_column:
-        st.metric(
+        render_compact_metric(
             label="Documentos PDF",
             value=len(pdf_files),
         )
 
     with page_column:
-        st.metric(
+        render_compact_metric(
             label="Páginas procesadas",
             value=int(processing["page_count"]),
         )
 
     with chunk_column:
-        st.metric(
+        render_compact_metric(
             label="Chunks generados",
             value=int(processing["chunk_count"]),
         )
 
     with vector_column:
-        st.metric(
+        render_compact_metric(
             label="Vectores",
             value=(
                 int(index_snapshot["vector_count"])
@@ -785,7 +1542,7 @@ def main() -> None:
         )
 
     with index_column:
-        st.metric(
+        render_compact_metric(
             label="Índice FAISS",
             value=(
                 "Disponible"
@@ -844,25 +1601,25 @@ def main() -> None:
     ) = st.columns(4)
 
     with empty_column:
-        st.metric(
+        render_compact_metric(
             label="Páginas vacías",
             value=int(processing["empty_pages"]),
         )
 
     with ocr_column:
-        st.metric(
+        render_compact_metric(
             label="Candidatas a OCR",
             value=int(processing["ocr_candidates"]),
         )
 
     with category_column:
-        st.metric(
+        render_compact_metric(
             label="Categorías",
             value=int(processing["category_count"]),
         )
 
     with size_column:
-        st.metric(
+        render_compact_metric(
             label="Chunk máximo",
             value=f"{int(processing['maximum_chunk_size'])} caracteres",
         )
@@ -920,7 +1677,7 @@ def main() -> None:
         ) = st.columns(4)
 
         with model_column:
-            st.metric(
+            render_compact_metric(
                 label="Modelo de embeddings",
                 value=str(
                     index_snapshot["embedding_model"]
@@ -928,7 +1685,7 @@ def main() -> None:
             )
 
         with dimension_column:
-            st.metric(
+            render_compact_metric(
                 label="Dimensión",
                 value=int(
                     index_snapshot["embedding_dimension"]
@@ -936,7 +1693,7 @@ def main() -> None:
             )
 
         with type_column:
-            st.metric(
+            render_compact_metric(
                 label="Tipo de índice",
                 value=str(
                     index_snapshot["index_type"]
@@ -944,7 +1701,7 @@ def main() -> None:
             )
 
         with metric_column:
-            st.metric(
+            render_compact_metric(
                 label="Métrica",
                 value=str(
                     index_snapshot["distance_metric"]
@@ -965,9 +1722,11 @@ def main() -> None:
         index_snapshot=index_snapshot,
     )
 
+    render_quality_monitoring()
+
     st.caption(
-        "Siguiente hito: crear el banco de evaluación, medir la calidad "
-        "del RAG y decidir si se necesita reranking antes de LangGraph."
+        "Siguiente hito: persistir feedback y métricas, automatizar la "
+        "actualización documental y construir el banco de evaluación."
     )
 
 

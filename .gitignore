@@ -44,6 +44,7 @@ coverage.xml
 # Índice vectorial generado
 # ==========================================================
 storage/faiss_index/
+storage/monitoring/
 
 # Mantener la carpeta storage en Git
 !storage/.gitkeep
