@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from collections.abc import Callable
+from typing import TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +24,27 @@ logger = logging.getLogger(__name__)
 
 
 MIN_VERIFICATION_CONFIDENCE = 0.75
+
+VERIFICATION_MAX_ATTEMPTS = 2
+VERIFICATION_RETRY_BASE_SECONDS = 2.0
+
+TRANSIENT_ERROR_MARKERS = (
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "deadline exceeded",
+    "internal server error",
+    "rate limit",
+    "resource exhausted",
+    "resource_exhausted",
+    "service unavailable",
+    "temporarily unavailable",
+    "timeout",
+    "timed out",
+    "too many requests",
+)
 
 CITATION_PATTERN = re.compile(
     r"Fuente\s+(\d+)",
@@ -52,6 +76,12 @@ class SemanticVerification(BaseModel):
     )
 
     explanation: str
+
+
+StructuredModelT = TypeVar(
+    "StructuredModelT",
+    bound=BaseModel,
+)
 
 
 VERIFICATION_SYSTEM_INSTRUCTION = """
@@ -114,6 +144,132 @@ def build_verification_prompt(
     )
 
 
+def _iter_error_chain(
+    error: BaseException,
+) -> list[BaseException]:
+    """Recorre el error y sus causas sin entrar en ciclos."""
+
+    chain: list[BaseException] = []
+    current: BaseException | None = error
+    visited: set[int] = set()
+
+    while current is not None:
+        current_id = id(current)
+
+        if current_id in visited:
+            break
+
+        visited.add(
+            current_id
+        )
+
+        chain.append(
+            current
+        )
+
+        current = (
+            current.__cause__
+            or current.__context__
+        )
+
+    return chain
+
+
+def is_transient_verification_error(
+    error: BaseException,
+) -> bool:
+    """Detecta fallos temporales que justifican un nuevo intento."""
+
+    messages = " | ".join(
+        str(item).lower()
+        for item in _iter_error_chain(
+            error
+        )
+    )
+
+    return any(
+        marker in messages
+        for marker in TRANSIENT_ERROR_MARKERS
+    )
+
+
+def generate_structured_with_retry(
+    *,
+    system_instruction: str,
+    user_prompt: str,
+    schema: type[StructuredModelT],
+    max_attempts: int = VERIFICATION_MAX_ATTEMPTS,
+    retry_base_seconds: float = VERIFICATION_RETRY_BASE_SECONDS,
+    generator: Callable[..., StructuredModelT] = generate_structured,
+) -> StructuredModelT:
+    """Genera una salida estructurada con reintento temporal controlado.
+
+    Solo repite errores asociados a límites, indisponibilidad o timeouts.
+    Una respuesta estructurada válida, aunque rechace el contenido, no
+    se regenera.
+    """
+
+    if max_attempts < 1:
+        raise ValueError(
+            "max_attempts debe ser mayor o igual que 1."
+        )
+
+    if retry_base_seconds < 0:
+        raise ValueError(
+            "retry_base_seconds no puede ser negativo."
+        )
+
+    for attempt in range(
+        1,
+        max_attempts + 1,
+    ):
+        try:
+            return generator(
+                system_instruction=system_instruction,
+                user_prompt=user_prompt,
+                schema=schema,
+            )
+
+        except GeminiChatError as error:
+            is_last_attempt = (
+                attempt >= max_attempts
+            )
+
+            transient = (
+                is_transient_verification_error(
+                    error
+                )
+            )
+
+            if (
+                is_last_attempt
+                or not transient
+            ):
+                raise
+
+            wait_seconds = (
+                retry_base_seconds
+                * (2 ** (attempt - 1))
+            )
+
+            logger.warning(
+                "La verificación falló temporalmente en el intento "
+                "%s de %s. Nuevo intento en %.1f segundos. Error: %s",
+                attempt,
+                max_attempts,
+                wait_seconds,
+                error,
+            )
+
+            time.sleep(
+                wait_seconds
+            )
+
+    raise GeminiChatError(
+        "La verificación no produjo un resultado."
+    )
+
+
 def verify_answer(
     *,
     query: str,
@@ -156,7 +312,7 @@ def verify_answer(
     )
 
     try:
-        semantic = generate_structured(
+        semantic = generate_structured_with_retry(
             system_instruction=(
                 VERIFICATION_SYSTEM_INSTRUCTION
             ),
@@ -169,9 +325,21 @@ def verify_answer(
         )
 
     except GeminiChatError as error:
+        transient = (
+            is_transient_verification_error(
+                error
+            )
+        )
+
+        detail = (
+            "después de agotar los reintentos"
+            if transient
+            else "por un error no recuperable"
+        )
+
         raise VerificationError(
             "No fue posible verificar automáticamente "
-            "la respuesta."
+            f"la respuesta {detail}."
         ) from error
 
     passed = (

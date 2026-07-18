@@ -19,7 +19,7 @@ Las respuestas se restringen al contexto documental recuperado y conservan traza
 
 ## Estado del proyecto
 
-**Fase actual: interfaz conversacional y monitoreo persistente completados.**
+**Fase actual: interfaz conversacional, monitoreo persistente, reintentos de verificación y detección de cambios documentales completados.**
 
 El proyecto ya permite:
 
@@ -43,6 +43,9 @@ El proyecto ya permite:
 - Registrar feedback positivo o negativo por respuesta.
 - Persistir interacciones, errores, tiempos y feedback en SQLite.
 - Mostrar métricas de calidad y posibles vacíos de conocimiento.
+- Reintentar automáticamente fallos transitorios de verificación.
+- Calcular firmas SHA-256 de los documentos del corpus.
+- Detectar documentos agregados, modificados, eliminados o sin cambios.
 - Ofrecer contactos sintéticos de demostración únicamente durante un fallback.
 
 ### Resultado actual
@@ -84,6 +87,8 @@ El proyecto ya permite:
 | Persistencia SQLite | Implementada |
 | Monitoreo de calidad | Implementado |
 | Reranking | Pendiente de evaluación |
+| Detección de cambios por SHA-256 | Implementada |
+| Integración del detector con la indexación | Pendiente |
 | Actualización automática del índice | Pendiente |
 | Banco de evaluación | Pendiente |
 | Agente con LangGraph | Pendiente |
@@ -113,7 +118,7 @@ El proyecto ya permite:
 | `core` | Configuración, variables de entorno y rutas |
 | `domain` | Modelos de recuperación, respuesta, verificación y contactos |
 | `application` | Indexación, recuperación, generación y verificación |
-| `infrastructure` | Integraciones con PDF, Gemini, FAISS y SQLite |
+| `infrastructure` | Integraciones con PDF, Gemini, FAISS, SQLite y detección de cambios documentales |
 | `presentation` | Interfaz conversacional en Streamlit |
 
 ### Flujo completo
@@ -209,13 +214,16 @@ bimbam-buy-ai-agent/
 │   │   ├── pdf_loader.py
 │   │   ├── gemini_provider.py
 │   │   ├── faiss_store.py
-│   │   └── monitoring_repository.py
+│   │   ├── monitoring_repository.py
+│   │   └── document_change_detector.py
 │   └── presentation/
 │       └── streamlit_app.py
 └── tests/
     ├── test_pdf_loader.py
     ├── test_retrieval.py
-    └── test_rag_service.py
+    ├── test_rag_service.py
+    ├── test_verification_retry.py
+    └── test_document_change_detector.py
 ```
 
 Los directorios `storage/faiss_index/` y `storage/monitoring/` se generan localmente y no deben almacenarse en GitHub.
@@ -413,6 +421,130 @@ Usuario: ¿Y si pagué en cuotas?
 
 Las respuestas anteriores no se usan como evidencia. El sistema vuelve a consultar el corpus para cada pregunta.
 
+
+## Reintentos automáticos de verificación
+
+La verificación estructurada incorpora un reintento controlado para errores temporales del proveedor.
+
+Se reintenta ante señales como:
+
+```text
+429
+500
+502
+503
+504
+rate limit
+resource exhausted
+service unavailable
+timeout
+deadline exceeded
+```
+
+Configuración actual:
+
+```python
+VERIFICATION_MAX_ATTEMPTS = 2
+VERIFICATION_RETRY_BASE_SECONDS = 2.0
+```
+
+Esto representa un intento inicial y un único reintento automático después de una espera de dos segundos.
+
+No se reintenta cuando:
+
+- La respuesta estructurada se generó correctamente.
+- El verificador concluye que la respuesta no está respaldada.
+- Existen citas inválidas.
+- El error corresponde a una condición permanente de esquema o configuración.
+
+Pruebas implementadas:
+
+```bash
+python -m pytest tests/test_verification_retry.py -v
+```
+
+Resultado validado:
+
+```text
+4 passed
+```
+
+## Detección de cambios documentales
+
+El módulo:
+
+```text
+bimbam_assistant/infrastructure/document_change_detector.py
+```
+
+calcula una firma SHA-256 por cada PDF del corpus.
+
+Cada firma incluye:
+
+```text
+relative_path
+sha256
+size_bytes
+```
+
+El detector clasifica los documentos como:
+
+```text
+added
+modified
+deleted
+unchanged
+```
+
+El manifiesto esperado se almacenará en:
+
+```text
+storage/faiss_index/corpus_manifest.json
+```
+
+Ejemplo de estructura:
+
+```json
+{
+  "schema_version": 1,
+  "hash_algorithm": "sha256",
+  "document_count": 5,
+  "documents": [
+    {
+      "relative_path": "Manual de Garantía de Productos de BimBam Buy.pdf",
+      "sha256": "firma-del-documento",
+      "size_bytes": 24583
+    }
+  ]
+}
+```
+
+La primera inspección marca los cinco PDF como agregados cuando todavía no existe un manifiesto previo.
+
+Pruebas implementadas:
+
+```bash
+python -m pytest tests/test_document_change_detector.py -v
+```
+
+Resultado validado:
+
+```text
+6 passed
+```
+
+El detector todavía no está integrado con `scripts/index_documents.py`. Por tanto, la indexación continúa ejecutándose manualmente y reconstruyendo el índice cuando se llama el script actual.
+
+El siguiente paso será:
+
+```text
+calcular hashes
+→ comparar manifiestos
+→ omitir indexación si no hay cambios
+→ reconstruir FAISS si cambia el corpus
+→ guardar el nuevo manifiesto
+```
+
 ## Monitoreo persistente
 
 La aplicación crea automáticamente:
@@ -523,7 +655,7 @@ Una consulta con evidencia normalmente utiliza:
 
 Una consulta sin evidencia utiliza únicamente el embedding de la pregunta.
 
-Los fallos transitorios de la API quedan registrados en SQLite. El reintento automático específico para la verificación todavía está pendiente.
+Los fallos transitorios de la verificación se reintentan automáticamente una vez. Si ambos intentos fallan, la interacción se registra como error en SQLite.
 
 ## Pruebas manuales realizadas
 
@@ -587,17 +719,18 @@ El asistente utilizó las preguntas recientes para interpretar el seguimiento y 
 
 ## Próximas etapas
 
-1. Agregar reintentos automáticos para fallos transitorios de verificación.
-2. Detectar cambios en los PDF mediante firma o hash.
-3. Automatizar la regeneración del índice.
-4. Crear el banco de preguntas de evaluación.
-5. Implementar pruebas automáticas de recuperación, citas y fallback.
-6. Medir precisión, fidelidad, latencia y tasa de rechazo.
-7. Ajustar el umbral y la confianza mínima.
-8. Decidir si se necesita reranking.
-9. Implementar el triaje y el agente con LangGraph.
-10. Construir y probar Docker.
-11. Desplegar en OCI Compute.
+1. Integrar la detección de cambios con `scripts/index_documents.py`.
+2. Omitir la regeneración del índice cuando el corpus no cambie.
+3. Añadir la opción `--force` para reconstrucción manual.
+4. Automatizar la ejecución periódica del pipeline documental.
+5. Crear el banco de preguntas de evaluación.
+6. Implementar pruebas automáticas de recuperación, citas y fallback.
+7. Medir precisión, fidelidad, latencia y tasa de rechazo.
+8. Ajustar el umbral y la confianza mínima.
+9. Decidir si se necesita reranking.
+10. Implementar el triaje y el agente con LangGraph.
+11. Construir y probar Docker.
+12. Desplegar en OCI Compute.
 
 ## Alcance actual
 
@@ -612,6 +745,7 @@ PDF
   → verificación automática
   → respuesta verificada o fallback
   → feedback y monitoreo persistente
+  → control de cambios documentales por SHA-256
 ```
 
 ## Autor
