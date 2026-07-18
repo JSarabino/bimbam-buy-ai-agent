@@ -2,21 +2,32 @@
 
 Este script coordina:
 
-1. La búsqueda de los documentos PDF.
+1. La detección de cambios en los documentos PDF.
 2. La extracción y limpieza del texto.
 3. La fragmentación en chunks.
 4. La validación de metadatos.
 5. La generación de embeddings con Gemini.
 6. La creación y persistencia del índice FAISS.
+7. La actualización del manifiesto SHA-256 del corpus.
+
+Cuando el corpus no ha cambiado y el índice está completo, el script
+finaliza sin volver a consumir la API de embeddings.
+
+Uso:
+
+    python scripts/index_documents.py
+    python scripts/index_documents.py --force
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from collections import Counter
 from pathlib import Path
 from statistics import mean
+from typing import Sequence
 
 from langchain_core.documents import Document
 
@@ -43,6 +54,13 @@ from bimbam_assistant.core.config import (
     ConfigurationError,
     get_settings,
 )
+from bimbam_assistant.infrastructure.document_change_detector import (
+    CorpusChangeSet,
+    DocumentChangeDetectionError,
+    default_corpus_manifest_path,
+    inspect_corpus_changes,
+    save_corpus_manifest,
+)
 from bimbam_assistant.infrastructure.pdf_loader import (
     PdfLoadingError,
     find_pdf_files,
@@ -60,6 +78,85 @@ def configure_logging() -> None:
         level=logging.INFO,
         format="%(levelname)s | %(message)s",
     )
+
+
+def parse_arguments(
+    argv: Sequence[str] | None = None,
+) -> argparse.Namespace:
+    """Interpreta los argumentos de línea de comandos."""
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Procesa los PDF y reconstruye el índice FAISS solo "
+            "cuando el corpus cambia."
+        ),
+    )
+
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Reconstruye el índice aunque los documentos no hayan "
+            "cambiado."
+        ),
+    )
+
+    return parser.parse_args(
+        argv
+    )
+
+
+def should_rebuild_index(
+    *,
+    force: bool,
+    index_exists: bool,
+    changes: CorpusChangeSet,
+) -> bool:
+    """Determina si el índice debe reconstruirse."""
+
+    return (
+        force
+        or not index_exists
+        or changes.has_changes
+    )
+
+
+def get_rebuild_reasons(
+    *,
+    force: bool,
+    index_exists: bool,
+    changes: CorpusChangeSet,
+) -> list[str]:
+    """Describe las razones que obligan a reconstruir el índice."""
+
+    reasons: list[str] = []
+
+    if force:
+        reasons.append(
+            "se solicitó reconstrucción forzada"
+        )
+
+    if not index_exists:
+        reasons.append(
+            "el índice FAISS no existe o está incompleto"
+        )
+
+    if changes.added:
+        reasons.append(
+            f"{len(changes.added)} documento(s) agregado(s)"
+        )
+
+    if changes.modified:
+        reasons.append(
+            f"{len(changes.modified)} documento(s) modificado(s)"
+        )
+
+    if changes.deleted:
+        reasons.append(
+            f"{len(changes.deleted)} documento(s) eliminado(s)"
+        )
+
+    return reasons
 
 
 def count_pages_by_document(
@@ -121,6 +218,105 @@ def get_categories_by_document(
     return categories
 
 
+def print_change_summary(
+    *,
+    changes: CorpusChangeSet,
+    manifest_path: Path,
+    index_exists: bool,
+    force: bool,
+) -> None:
+    """Muestra el resultado de la inspección del corpus."""
+
+    print()
+    print("=" * 72)
+    print("CONTROL DE CAMBIOS DEL CORPUS")
+    print("=" * 72)
+
+    print(
+        f"Manifiesto anterior : "
+        f"{'Sí' if changes.previous_manifest_exists else 'No'}"
+    )
+    print(
+        f"Índice disponible   : "
+        f"{'Sí' if index_exists else 'No'}"
+    )
+    print(
+        f"Modo forzado        : "
+        f"{'Sí' if force else 'No'}"
+    )
+    print(
+        f"Agregados           : "
+        f"{len(changes.added)}"
+    )
+    print(
+        f"Modificados         : "
+        f"{len(changes.modified)}"
+    )
+    print(
+        f"Eliminados          : "
+        f"{len(changes.deleted)}"
+    )
+    print(
+        f"Sin cambios         : "
+        f"{len(changes.unchanged)}"
+    )
+    print(
+        f"Ruta del manifiesto : "
+        f"{manifest_path}"
+    )
+
+    change_groups = (
+        ("AGREGADOS", changes.added),
+        ("MODIFICADOS", changes.modified),
+        ("ELIMINADOS", changes.deleted),
+    )
+
+    for title, documents in change_groups:
+        if not documents:
+            continue
+
+        print()
+        print(title)
+        print("-" * 72)
+
+        for document in documents:
+            print(
+                f"- {document}"
+            )
+
+    print("=" * 72)
+
+
+def print_skip_summary(
+    *,
+    manifest_path: Path,
+    unchanged_count: int,
+) -> None:
+    """Informa que no se requiere una nueva indexación."""
+
+    print()
+    print("=" * 72)
+    print("ÍNDICE SIN CAMBIOS")
+    print("=" * 72)
+    print(
+        "El corpus coincide con el manifiesto y el índice FAISS "
+        "está completo."
+    )
+    print(
+        f"Documentos sin cambios : {unchanged_count}"
+    )
+    print(
+        f"Manifiesto             : {manifest_path}"
+    )
+    print(
+        "No se procesaron PDF ni se realizaron llamadas a Gemini."
+    )
+    print(
+        "Usa --force para reconstruir el índice manualmente."
+    )
+    print("=" * 72)
+
+
 def print_document_processing_summary(
     *,
     pdf_files: list[Path],
@@ -164,37 +360,69 @@ def print_document_processing_summary(
         else 0
     )
 
-    page_counts = count_pages_by_document(pages)
-    chunk_counts = count_chunks_by_document(chunks)
-    categories = get_categories_by_document(pages)
+    page_counts = count_pages_by_document(
+        pages
+    )
+
+    chunk_counts = count_chunks_by_document(
+        chunks
+    )
+
+    categories = get_categories_by_document(
+        pages
+    )
 
     print()
     print("=" * 72)
     print("PROCESAMIENTO DOCUMENTAL DE BIMBAM ASSISTANT")
     print("=" * 72)
 
-    print(f"Ruta de documentos : {settings.documents_path}")
-    print(f"Archivos PDF       : {len(pdf_files)}")
-    print(f"Páginas procesadas : {len(pages)}")
-    print(f"Páginas vacías     : {empty_pages}")
-    print(f"Candidatas a OCR   : {ocr_candidates}")
-    print(f"Chunks generados   : {len(chunks)}")
+    print(
+        f"Ruta de documentos : {settings.documents_path}"
+    )
+    print(
+        f"Archivos PDF       : {len(pdf_files)}"
+    )
+    print(
+        f"Páginas procesadas : {len(pages)}"
+    )
+    print(
+        f"Páginas vacías     : {empty_pages}"
+    )
+    print(
+        f"Candidatas a OCR   : {ocr_candidates}"
+    )
+    print(
+        f"Chunks generados   : {len(chunks)}"
+    )
 
     print()
     print("CONFIGURACIÓN DE CHUNKING")
     print("-" * 72)
 
-    print(f"Chunk size         : {settings.chunk_size}")
-    print(f"Chunk overlap      : {settings.chunk_overlap}")
-    print(f"Tamaño mínimo      : {minimum_chunk_size}")
-    print(f"Tamaño promedio    : {average_chunk_size}")
-    print(f"Tamaño máximo      : {maximum_chunk_size}")
+    print(
+        f"Chunk size         : {settings.chunk_size}"
+    )
+    print(
+        f"Chunk overlap      : {settings.chunk_overlap}"
+    )
+    print(
+        f"Tamaño mínimo      : {minimum_chunk_size}"
+    )
+    print(
+        f"Tamaño promedio    : {average_chunk_size}"
+    )
+    print(
+        f"Tamaño máximo      : {maximum_chunk_size}"
+    )
 
     print()
     print("DETALLE POR DOCUMENTO")
     print("-" * 72)
 
-    for document_name in sorted(page_counts):
+    for document_name in sorted(
+        page_counts
+    ):
         print(
             f"- {document_name}\n"
             f"  Categoría: {categories[document_name]} | "
@@ -205,6 +433,8 @@ def print_document_processing_summary(
 
 def print_indexing_summary(
     result: IndexingResult,
+    *,
+    corpus_manifest_path: Path,
 ) -> None:
     """Muestra el resumen del índice vectorial generado."""
 
@@ -256,35 +486,111 @@ def print_indexing_summary(
     print("ARCHIVOS GENERADOS")
     print("-" * 72)
 
-    for file_name in (
-        "index.faiss",
-        "documents.json",
-        "manifest.json",
-    ):
-        file_path = result.output_path / file_name
-        status = "OK" if file_path.is_file() else "FALTANTE"
+    generated_files = (
+        result.output_path / "index.faiss",
+        result.output_path / "documents.json",
+        result.output_path / "manifest.json",
+        corpus_manifest_path,
+    )
+
+    for file_path in generated_files:
+        status = (
+            "OK"
+            if file_path.is_file()
+            else "FALTANTE"
+        )
 
         print(
-            f"{status:<8} | {file_name}"
+            f"{status:<8} | {file_path.name}"
         )
 
     print("=" * 72)
 
 
-def main() -> int:
-    """Ejecuta el pipeline de indexación completo."""
+def main(
+    argv: Sequence[str] | None = None,
+) -> int:
+    """Ejecuta el pipeline condicional de indexación."""
 
     configure_logging()
 
+    arguments = parse_arguments(
+        argv
+    )
+
     try:
         settings = get_settings()
+
+        documents_path = (
+            settings.require_documents_path()
+        )
+
+        corpus_manifest_path = (
+            default_corpus_manifest_path(
+                settings.faiss_index_path
+            )
+        )
+
+        logger.info(
+            "Inspeccionando cambios en el corpus documental."
+        )
+
+        (
+            current_corpus_manifest,
+            changes,
+        ) = inspect_corpus_changes(
+            documents_path=documents_path,
+            manifest_path=corpus_manifest_path,
+        )
+
+        index_exists = (
+            settings.faiss_index_exists
+        )
+
+        print_change_summary(
+            changes=changes,
+            manifest_path=corpus_manifest_path,
+            index_exists=index_exists,
+            force=arguments.force,
+        )
+
+        rebuild_required = should_rebuild_index(
+            force=arguments.force,
+            index_exists=index_exists,
+            changes=changes,
+        )
+
+        if not rebuild_required:
+            print_skip_summary(
+                manifest_path=corpus_manifest_path,
+                unchanged_count=len(
+                    changes.unchanged
+                ),
+            )
+
+            logger.info(
+                "El índice está actualizado. No se requiere indexación."
+            )
+
+            return 0
+
+        reasons = get_rebuild_reasons(
+            force=arguments.force,
+            index_exists=index_exists,
+            changes=changes,
+        )
+
+        logger.info(
+            "Se reconstruirá el índice: %s.",
+            "; ".join(reasons),
+        )
 
         logger.info(
             "Iniciando procesamiento documental."
         )
 
         pdf_files = find_pdf_files(
-            settings.require_documents_path()
+            documents_path
         )
 
         logger.info(
@@ -293,7 +599,7 @@ def main() -> int:
         )
 
         pages = load_pdf_documents(
-            settings.documents_path
+            documents_path
         )
 
         logger.info(
@@ -330,8 +636,16 @@ def main() -> int:
             output_path=settings.faiss_index_path,
         )
 
+        # El manifiesto se actualiza únicamente después de que FAISS
+        # y sus archivos asociados se hayan generado correctamente.
+        save_corpus_manifest(
+            current_corpus_manifest,
+            corpus_manifest_path,
+        )
+
         print_indexing_summary(
-            indexing_result
+            indexing_result,
+            corpus_manifest_path=corpus_manifest_path,
         )
 
         logger.info(
@@ -342,6 +656,7 @@ def main() -> int:
 
     except (
         ConfigurationError,
+        DocumentChangeDetectionError,
         PdfLoadingError,
         ChunkingError,
         IndexingError,
@@ -369,4 +684,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(
+        main()
+    )

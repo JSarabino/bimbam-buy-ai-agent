@@ -24,6 +24,12 @@ from bimbam_assistant.core.config import (
     get_settings,
 )
 from bimbam_assistant.domain.models import RagResponse
+from bimbam_assistant.infrastructure.document_change_detector import (
+    DocumentChangeDetectionError,
+    default_corpus_manifest_path,
+    inspect_corpus_changes,
+    load_corpus_manifest,
+)
 from bimbam_assistant.infrastructure.faiss_store import (
     FaissStoreError,
     load_vector_store,
@@ -320,6 +326,233 @@ def render_compact_metric(
         ),
         unsafe_allow_html=True,
     )
+
+
+def build_corpus_sync_snapshot(
+    *,
+    documents_path: Path,
+    faiss_index_path: Path,
+    index_exists: bool,
+) -> dict[str, object]:
+    """Compara el corpus actual con el manifiesto de la última indexación."""
+
+    corpus_manifest_path = default_corpus_manifest_path(
+        faiss_index_path
+    )
+
+    stored_manifest = load_corpus_manifest(
+        corpus_manifest_path
+    )
+
+    (
+        current_manifest,
+        changes,
+    ) = inspect_corpus_changes(
+        documents_path=documents_path,
+        manifest_path=corpus_manifest_path,
+    )
+
+    synchronized = bool(
+        index_exists
+        and changes.previous_manifest_exists
+        and not changes.has_changes
+    )
+
+    return {
+        "synchronized": synchronized,
+        "manifest_path": str(
+            corpus_manifest_path
+        ),
+        "manifest_exists": changes.previous_manifest_exists,
+        "indexed_at_utc": (
+            stored_manifest.get(
+                "created_at_utc"
+            )
+            if stored_manifest
+            else None
+        ),
+        "document_count": int(
+            current_manifest.get(
+                "document_count",
+                0,
+            )
+        ),
+        "added": list(
+            changes.added
+        ),
+        "modified": list(
+            changes.modified
+        ),
+        "deleted": list(
+            changes.deleted
+        ),
+        "unchanged": list(
+            changes.unchanged
+        ),
+        "changed_count": changes.changed_count,
+    }
+
+
+def render_corpus_sync_status(
+    sync_snapshot: dict[str, object] | None,
+    *,
+    sync_error: str | None,
+) -> None:
+    """Muestra si FAISS representa el corpus documental actual."""
+
+    st.subheader(
+        "Sincronización documental"
+    )
+
+    if sync_error:
+        st.error(
+            "No fue posible comparar el corpus con el manifiesto "
+            f"de indexación: {sync_error}"
+        )
+        return
+
+    if sync_snapshot is None:
+        st.warning(
+            "No fue posible determinar el estado de sincronización."
+        )
+        return
+
+    (
+        status_column,
+        added_column,
+        modified_column,
+        deleted_column,
+        unchanged_column,
+    ) = st.columns(5)
+
+    with status_column:
+        render_compact_metric(
+            label="Estado",
+            value=(
+                "Actualizado"
+                if sync_snapshot["synchronized"]
+                else "Requiere indexación"
+            ),
+        )
+
+    with added_column:
+        render_compact_metric(
+            label="Agregados",
+            value=len(
+                sync_snapshot["added"]
+            ),
+        )
+
+    with modified_column:
+        render_compact_metric(
+            label="Modificados",
+            value=len(
+                sync_snapshot["modified"]
+            ),
+        )
+
+    with deleted_column:
+        render_compact_metric(
+            label="Eliminados",
+            value=len(
+                sync_snapshot["deleted"]
+            ),
+        )
+
+    with unchanged_column:
+        render_compact_metric(
+            label="Sin cambios",
+            value=len(
+                sync_snapshot["unchanged"]
+            ),
+        )
+
+    if sync_snapshot["synchronized"]:
+        st.success(
+            "El índice FAISS representa el estado actual de los "
+            "documentos. El chat está habilitado."
+        )
+    else:
+        if not sync_snapshot["manifest_exists"]:
+            st.warning(
+                "No existe un manifiesto del corpus. Ejecuta "
+                "`python scripts/index_documents.py` para sincronizar "
+                "el índice antes de consultar el asistente."
+            )
+        else:
+            st.warning(
+                "El corpus cambió después de la última indexación. "
+                "El chat permanecerá deshabilitado para evitar respuestas "
+                "basadas en documentos desactualizados. Ejecuta "
+                "`python scripts/index_documents.py`."
+            )
+
+    indexed_at_utc = sync_snapshot.get(
+        "indexed_at_utc"
+    )
+
+    if indexed_at_utc:
+        st.caption(
+            "Última firma guardada del corpus: "
+            f"`{indexed_at_utc}`"
+        )
+
+    changed_documents = [
+        (
+            "Agregado",
+            document,
+        )
+        for document in sync_snapshot["added"]
+    ] + [
+        (
+            "Modificado",
+            document,
+        )
+        for document in sync_snapshot["modified"]
+    ] + [
+        (
+            "Eliminado",
+            document,
+        )
+        for document in sync_snapshot["deleted"]
+    ]
+
+    if changed_documents:
+        with st.expander(
+            "Ver cambios detectados",
+            expanded=True,
+        ):
+            st.dataframe(
+                [
+                    {
+                        "Cambio": change_type,
+                        "Documento": document,
+                    }
+                    for change_type, document in changed_documents
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with st.expander(
+        "Ver manifiesto de sincronización"
+    ):
+        st.write(
+            {
+                "Ruta": sync_snapshot[
+                    "manifest_path"
+                ],
+                "Existe": sync_snapshot[
+                    "manifest_exists"
+                ],
+                "Documentos actuales": sync_snapshot[
+                    "document_count"
+                ],
+                "Cambios totales": sync_snapshot[
+                    "changed_count"
+                ],
+            }
+        )
 
 def render_sidebar() -> None:
     """Muestra la configuración pública del proyecto."""
@@ -1160,6 +1393,7 @@ def render_quality_monitoring() -> None:
 def render_rag_section(
     *,
     index_snapshot: dict[str, object] | None,
+    corpus_is_current: bool,
 ) -> None:
     """Renderiza el chat, el historial y las respuestas RAG."""
 
@@ -1189,6 +1423,7 @@ def render_rag_section(
     query_ready = bool(
         index_snapshot
         and settings.google_api_key_configured
+        and corpus_is_current
     )
 
     available_categories = (
@@ -1283,6 +1518,12 @@ def render_rag_section(
             st.warning(
                 "Genera y valida el índice FAISS antes de realizar "
                 "consultas."
+            )
+        elif not corpus_is_current:
+            st.warning(
+                "El corpus y el índice no están sincronizados. "
+                "Ejecuta `python scripts/index_documents.py` antes "
+                "de realizar consultas."
             )
         elif not settings.google_api_key_configured:
             st.warning(
@@ -1449,9 +1690,9 @@ def main() -> None:
     st.markdown(
         """
         La cadena RAG, la verificación automática y la interfaz
-        conversacional ya están implementadas. La aplicación conserva el
-        historial durante la sesión, muestra las fuentes de cada respuesta
-        y permite registrar retroalimentación positiva o negativa.
+        conversacional ya están implementadas. La aplicación también
+        comprueba que el índice FAISS esté sincronizado con el corpus antes
+        de habilitar las consultas.
         """
     )
 
@@ -1502,6 +1743,18 @@ def main() -> None:
 
         except FaissStoreError as error:
             index_error = str(error)
+
+    corpus_sync_snapshot: dict[str, object] | None = None
+    corpus_sync_error: str | None = None
+
+    try:
+        corpus_sync_snapshot = build_corpus_sync_snapshot(
+            documents_path=settings.documents_path,
+            faiss_index_path=settings.faiss_index_path,
+            index_exists=bool(index_snapshot),
+        )
+    except DocumentChangeDetectionError as error:
+        corpus_sync_error = str(error)
 
     st.subheader("Estado del proyecto")
 
@@ -1590,6 +1843,11 @@ def main() -> None:
             "El índice vectorial no está disponible. Ejecuta "
             "`python scripts/index_documents.py` para generarlo."
         )
+
+    render_corpus_sync_status(
+        corpus_sync_snapshot,
+        sync_error=corpus_sync_error,
+    )
 
     st.subheader("Resumen del procesamiento")
 
@@ -1720,13 +1978,17 @@ def main() -> None:
 
     render_rag_section(
         index_snapshot=index_snapshot,
+        corpus_is_current=bool(
+            corpus_sync_snapshot
+            and corpus_sync_snapshot["synchronized"]
+        ),
     )
 
     render_quality_monitoring()
 
     st.caption(
-        "Siguiente hito: persistir feedback y métricas, automatizar la "
-        "actualización documental y construir el banco de evaluación."
+        "Siguiente hito: construir el banco de evaluación, medir la "
+        "calidad del RAG y ampliar las pruebas automáticas."
     )
 
 

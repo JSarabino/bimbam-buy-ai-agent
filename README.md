@@ -88,8 +88,14 @@ El proyecto ya permite:
 | Monitoreo de calidad | Implementado |
 | Reranking | Pendiente de evaluación |
 | Detección de cambios por SHA-256 | Implementada |
-| Integración del detector con la indexación | Pendiente |
-| Actualización automática del índice | Pendiente |
+| Integración del detector con la indexación | Implementada |
+| Omisión de indexación cuando no hay cambios | Implementada |
+| Reconstrucción manual con `--force` | Implementada |
+| Aviso de sincronización en Streamlit | Implementado |
+| Bloqueo del chat con índice desactualizado | Implementado |
+| Ejecutor programable para Windows | Implementado y probado |
+| Preparación de cron para Linux/OCI | Implementada |
+| Activación de cron en OCI | Pendiente del despliegue |
 | Banco de evaluación | Pendiente |
 | Agente con LangGraph | Pendiente |
 | Despliegue en OCI | Pendiente |
@@ -533,7 +539,7 @@ Resultado validado:
 6 passed
 ```
 
-El detector todavía no está integrado con `scripts/index_documents.py`. Por tanto, la indexación continúa ejecutándose manualmente y reconstruyendo el índice cuando se llama el script actual.
+El detector está integrado con `scripts/index_documents.py`. La indexación se omite cuando el corpus no cambia y puede forzarse con `--force`.
 
 El siguiente paso será:
 
@@ -703,6 +709,48 @@ Secuencia:
 
 El asistente utilizó las preguntas recientes para interpretar el seguimiento y volvió a recuperar evidencia documental.
 
+
+## Mantenimiento documental programable
+
+El pipeline documental ya está integrado con el detector SHA-256.
+
+Comportamiento:
+
+```text
+Ejecutar index_documents.py
+→ comparar corpus y manifiesto
+→ omitir el proceso si no hay cambios
+→ reconstruir FAISS si hay cambios
+→ guardar corpus_manifest.json
+```
+
+Comandos:
+
+```bash
+python scripts/index_documents.py
+python scripts/index_documents.py --force
+```
+
+La interfaz Streamlit compara el corpus actual con el manifiesto y
+deshabilita el chat cuando el índice está desactualizado.
+
+El proyecto incluye:
+
+```text
+scripts/run_index_maintenance.ps1
+scripts/install_windows_index_task.ps1
+scripts/run_index_maintenance.sh
+scripts/install_linux_cron.sh
+```
+
+La tarea programada de Windows fue creada, ejecutada y validada
+correctamente durante las pruebas. Después fue eliminada del equipo
+local, por lo que la capacidad está implementada pero no permanece
+activa en ese computador.
+
+Los scripts de Linux están preparados para activar el mantenimiento
+periódico mediante cron cuando el proyecto se despliegue en OCI.
+
 ## Seguridad y limitaciones
 
 - `.env` no se almacena en Git.
@@ -719,18 +767,15 @@ El asistente utilizó las preguntas recientes para interpretar el seguimiento y 
 
 ## Próximas etapas
 
-1. Integrar la detección de cambios con `scripts/index_documents.py`.
-2. Omitir la regeneración del índice cuando el corpus no cambie.
-3. Añadir la opción `--force` para reconstrucción manual.
-4. Automatizar la ejecución periódica del pipeline documental.
-5. Crear el banco de preguntas de evaluación.
-6. Implementar pruebas automáticas de recuperación, citas y fallback.
-7. Medir precisión, fidelidad, latencia y tasa de rechazo.
-8. Ajustar el umbral y la confianza mínima.
-9. Decidir si se necesita reranking.
-10. Implementar el triaje y el agente con LangGraph.
-11. Construir y probar Docker.
-12. Desplegar en OCI Compute.
+1. Crear el banco de preguntas de evaluación.
+2. Implementar pruebas automáticas de recuperación, citas y fallback.
+3. Medir precisión, fidelidad, latencia y tasa de rechazo.
+4. Ajustar el umbral y la confianza mínima.
+5. Decidir si se necesita reranking.
+6. Implementar el triaje y el agente con LangGraph.
+7. Construir y probar Docker.
+8. Desplegar en OCI Compute.
+9. Activar el cron de mantenimiento en OCI.
 
 ## Alcance actual
 
