@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from html import escape
 from pathlib import Path
@@ -56,6 +57,13 @@ INDEX_FILE_NAMES = (
     "index.faiss",
     "documents.json",
     "manifest.json",
+)
+
+EVALUATION_BANK_PATH = (
+    Path(__file__).resolve().parent
+    / "data"
+    / "evaluation"
+    / "questions.json"
 )
 
 CATEGORY_LABELS = {
@@ -550,6 +558,238 @@ def render_corpus_sync_status(
                 ],
                 "Cambios totales": sync_snapshot[
                     "changed_count"
+                ],
+            }
+        )
+
+
+@st.cache_data(show_spinner=False)
+def build_evaluation_bank_snapshot(
+    bank_path: str,
+    modified_at_ns: int,
+) -> dict[str, object]:
+    """Resume el banco de evaluación sin realizar llamadas a Gemini."""
+
+    del modified_at_ns
+
+    path = Path(
+        bank_path
+    )
+
+    payload = json.loads(
+        path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    questions = payload.get(
+        "questions",
+        [],
+    )
+
+    if not isinstance(
+        questions,
+        list,
+    ):
+        raise ValueError(
+            "El campo 'questions' debe ser una lista."
+        )
+
+    category_counts = Counter(
+        str(
+            question.get(
+                "category",
+                "sin_categoria",
+            )
+        )
+        for question in questions
+        if isinstance(
+            question,
+            dict,
+        )
+    )
+
+    tier_counts = Counter(
+        str(
+            question.get(
+                "evaluation_tier",
+                "sin_nivel",
+            )
+        )
+        for question in questions
+        if isinstance(
+            question,
+            dict,
+        )
+    )
+
+    batch_counts = Counter(
+        str(
+            question.get(
+                "budget_batch",
+                "sin_lote",
+            )
+        )
+        for question in questions
+        if isinstance(
+            question,
+            dict,
+        )
+    )
+
+    fallback_count = sum(
+        isinstance(
+            question,
+            dict,
+        )
+        and question.get(
+            "expected_behavior"
+        )
+        == "fallback"
+        for question in questions
+    )
+
+    policy = payload.get(
+        "evaluation_policy",
+        {},
+    )
+
+    return {
+        "name": payload.get(
+            "name",
+            "Banco de evaluación RAG",
+        ),
+        "question_count": len(
+            questions
+        ),
+        "category_counts": dict(
+            category_counts
+        ),
+        "tier_counts": dict(
+            tier_counts
+        ),
+        "batch_counts": dict(
+            batch_counts
+        ),
+        "batch_count": len(
+            batch_counts
+        ),
+        "fallback_count": fallback_count,
+        "daily_limit": policy.get(
+            "daily_gemini_call_limit",
+            20,
+        ),
+        "recommended_questions_per_day": policy.get(
+            "recommended_max_generated_questions_per_day",
+            4,
+        ),
+    }
+
+
+def render_evaluation_bank_status() -> None:
+    """Muestra el estado del banco y del evaluador sin consumir API."""
+
+    st.subheader(
+        "Evaluación RAG"
+    )
+
+    if not EVALUATION_BANK_PATH.is_file():
+        st.warning(
+            "El banco de evaluación todavía no está disponible en "
+            "`data/evaluation/questions.json`."
+        )
+        return
+
+    try:
+        snapshot = build_evaluation_bank_snapshot(
+            str(
+                EVALUATION_BANK_PATH
+            ),
+            EVALUATION_BANK_PATH.stat().st_mtime_ns,
+        )
+    except (
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
+        st.error(
+            "No fue posible leer el banco de evaluación: "
+            f"{error}"
+        )
+        return
+
+    (
+        questions_column,
+        batches_column,
+        fallback_column,
+        budget_column,
+    ) = st.columns(
+        4
+    )
+
+    with questions_column:
+        render_compact_metric(
+            label="Preguntas",
+            value=snapshot[
+                "question_count"
+            ],
+        )
+
+    with batches_column:
+        render_compact_metric(
+            label="Lotes",
+            value=snapshot[
+                "batch_count"
+            ],
+        )
+
+    with fallback_column:
+        render_compact_metric(
+            label="Casos fallback",
+            value=snapshot[
+                "fallback_count"
+            ],
+        )
+
+    with budget_column:
+        render_compact_metric(
+            label="Máximo diario",
+            value=(
+                f"{snapshot['recommended_questions_per_day']} "
+                "preguntas"
+            ),
+        )
+
+    st.success(
+        "El banco y el ejecutor controlado están preparados. "
+        "Las evaluaciones reales con Gemini no se han ejecutado "
+        "para conservar la cuota diaria."
+    )
+
+    st.caption(
+        "La validación del JSON, las pruebas offline y las simulaciones "
+        "del presupuesto no consumen llamadas de Gemini."
+    )
+
+    with st.expander(
+        "Ver cobertura del banco"
+    ):
+        st.write(
+            {
+                "Nombre": snapshot[
+                    "name"
+                ],
+                "Categorías": snapshot[
+                    "category_counts"
+                ],
+                "Niveles": snapshot[
+                    "tier_counts"
+                ],
+                "Lotes": snapshot[
+                    "batch_counts"
+                ],
+                "Límite diario configurado": snapshot[
+                    "daily_limit"
                 ],
             }
         )
@@ -1986,9 +2226,12 @@ def main() -> None:
 
     render_quality_monitoring()
 
+    render_evaluation_bank_status()
+
     st.caption(
-        "Siguiente hito: construir el banco de evaluación, medir la "
-        "calidad del RAG y ampliar las pruebas automáticas."
+        "Siguiente hito: implementar el triaje y la orquestación del "
+        "agente con LangGraph. Las evaluaciones reales se ejecutarán "
+        "por lotes cuando la cuota de Gemini esté disponible."
     )
 
 

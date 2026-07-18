@@ -19,7 +19,7 @@ Las respuestas se restringen al contexto documental recuperado y conservan traza
 
 ## Estado del proyecto
 
-**Fase actual: interfaz conversacional, monitoreo persistente, reintentos de verificación y detección de cambios documentales completados.**
+**Fase actual: RAG conversacional, verificación, monitoreo, mantenimiento documental y banco de evaluación controlado completados.**
 
 El proyecto ya permite:
 
@@ -46,6 +46,9 @@ El proyecto ya permite:
 - Reintentar automáticamente fallos transitorios de verificación.
 - Calcular firmas SHA-256 de los documentos del corpus.
 - Detectar documentos agregados, modificados, eliminados o sin cambios.
+- Mantener un banco de 20 preguntas para evaluar recuperación, generación, citas y fallback.
+- Validar el banco y simular el presupuesto sin consumir llamadas de Gemini.
+- Ejecutar evaluaciones por lotes con un límite diario protegido.
 - Ofrecer contactos sintéticos de demostración únicamente durante un fallback.
 
 ### Resultado actual
@@ -96,8 +99,11 @@ El proyecto ya permite:
 | Ejecutor programable para Windows | Implementado y probado |
 | Preparación de cron para Linux/OCI | Implementada |
 | Activación de cron en OCI | Pendiente del despliegue |
-| Banco de evaluación | Pendiente |
-| Agente con LangGraph | Pendiente |
+| Banco de evaluación de 20 preguntas | Implementado |
+| Validador offline del banco | Implementado |
+| Evaluador RAG con presupuesto diario | Implementado |
+| Ejecución real de los lotes | Pendiente de cuota disponible |
+| Agente con LangGraph | Siguiente hito |
 | Despliegue en OCI | Pendiente |
 
 ## Tecnologías
@@ -106,6 +112,7 @@ El proyecto ya permite:
 - LangChain Core.
 - LangChain Google GenAI.
 - LangChain Text Splitters.
+- LangGraph.
 - Google Gemini.
 - PyMuPDF.
 - FAISS CPU.
@@ -751,6 +758,95 @@ activa en ese computador.
 Los scripts de Linux están preparados para activar el mantenimiento
 periódico mediante cron cuando el proyecto se despliegue en OCI.
 
+
+## Banco de evaluación RAG
+
+El proyecto incluye un banco versionado en:
+
+```text
+data/evaluation/questions.json
+```
+
+Está compuesto por 20 preguntas organizadas en cinco lotes de cuatro
+preguntas:
+
+```text
+A, B, C, D y E
+```
+
+La cobertura incluye:
+
+- Envíos.
+- Garantías.
+- Reembolsos y devoluciones.
+- Métodos de pago.
+- Programa de afiliados.
+- Preguntas multidocumento.
+- Casos fuera de alcance y fallback.
+
+Cada caso registra la pregunta, la categoría, el tipo, la dificultad,
+los documentos y páginas esperados, los hechos que deberían aparecer,
+las afirmaciones que no deberían generarse y el comportamiento esperado.
+
+### Validación offline
+
+El banco puede validarse sin consumir Gemini:
+
+```bash
+python scripts/validate_evaluation_bank.py
+python -m pytest tests/test_evaluation_bank.py -v
+```
+
+### Evaluador con control de presupuesto
+
+El ejecutor se encuentra en:
+
+```text
+scripts/evaluate_rag.py
+```
+
+Funciona en modo simulación mientras no se agregue `--execute`.
+
+```bash
+python scripts/evaluate_rag.py --batch A --mode retrieval
+python scripts/evaluate_rag.py --batch A --mode full
+```
+
+Modos disponibles:
+
+| Modo | Reserva conservadora por pregunta | Lote de 4 |
+|---|---:|---:|
+| `retrieval` | 1 llamada | 4 llamadas |
+| `full` | 4 llamadas | 16 llamadas |
+
+El modo completo reserva una llamada para el embedding de consulta, una
+para generación, una para verificación y una posible llamada para el
+reintento de verificación.
+
+El límite configurado es de 20 llamadas diarias, con un margen de
+seguridad predeterminado de dos llamadas. El presupuesto local se registra
+en:
+
+```text
+storage/evaluation/gemini_budget.json
+```
+
+Los resultados de ejecuciones reales se escribirán en:
+
+```text
+storage/evaluation/runs/
+```
+
+La evaluación semántica de hechos se deja para revisión humana y para el
+verificador ya existente. No se utiliza un juez LLM adicional, porque
+añadiría otra llamada de Gemini por pregunta.
+
+### Estado de ejecución
+
+La estructura del banco, el validador, las pruebas offline, el planificador
+y el contador preventivo ya están implementados. Las evaluaciones reales
+no se han ejecutado todavía para conservar la cuota diaria disponible.
+
 ## Seguridad y limitaciones
 
 - `.env` no se almacena en Git.
@@ -762,20 +858,21 @@ periódico mediante cron cuando el proyecto se despliegue en OCI.
 - La verificación con otro LLM reduce el riesgo, pero no constituye una garantía matemática.
 - Cada verificación agrega latencia y consumo de API.
 - El historial completo no se restaura entre sesiones.
-- El pipeline de actualización documental todavía se ejecuta manualmente.
+- El mantenimiento puede ejecutarse manualmente o programarse; el cron de OCI se activará durante el despliegue.
+- El contador de evaluación solo conoce las llamadas reservadas por `evaluate_rag.py`; no puede observar consumos realizados desde Streamlit, la indexación u otros scripts.
+- Las evaluaciones reales del banco siguen pendientes de una ventana con cuota suficiente.
 - El reranking todavía no forma parte del baseline.
 
 ## Próximas etapas
 
-1. Crear el banco de preguntas de evaluación.
-2. Implementar pruebas automáticas de recuperación, citas y fallback.
-3. Medir precisión, fidelidad, latencia y tasa de rechazo.
-4. Ajustar el umbral y la confianza mínima.
-5. Decidir si se necesita reranking.
-6. Implementar el triaje y el agente con LangGraph.
-7. Construir y probar Docker.
-8. Desplegar en OCI Compute.
-9. Activar el cron de mantenimiento en OCI.
+1. Implementar el triaje y la orquestación del agente con LangGraph.
+2. Integrar el agente con la interfaz Streamlit sin duplicar la lógica RAG.
+3. Ejecutar los lotes del banco cuando la cuota diaria de Gemini esté disponible.
+4. Analizar precisión de recuperación, citas, verificación, fallback y latencia.
+5. Ajustar el umbral, la confianza mínima y decidir si se necesita reranking.
+6. Construir y probar Docker.
+7. Desplegar en OCI Compute.
+8. Activar el cron de mantenimiento en OCI.
 
 ## Alcance actual
 
@@ -791,6 +888,11 @@ PDF
   → respuesta verificada o fallback
   → feedback y monitoreo persistente
   → control de cambios documentales por SHA-256
+
+Banco de evaluación
+  → validación offline
+  → simulación de presupuesto
+  → ejecución controlada por lotes
 ```
 
 ## Autor

@@ -1,10 +1,579 @@
-[
-  {
-    "id": "Q001",
-    "question": "¿Cuánto tarda un envío a una zona extendida?",
-    "expected_document": "Guía de Tiempos y Costos de Envío",
-    "expected_answer_contains": [
-      "6 a 12 días hábiles"
-    ]
-  }
-]
+{
+  "schema_version": 1,
+  "name": "Banco de evaluación RAG de BimBam Assistant",
+  "description": "Conjunto de preguntas para evaluar recuperación, generación, citas, síntesis entre documentos y fallback.",
+  "question_count": 20,
+  "corpus_documents": [
+    "Guía de Tiempos y Costos de Envío de BimBam Buy",
+    "Manual de Garantía de Productos de BimBam Buy",
+    "Política de Reembolsos y Devoluciones de BimBam",
+    "Preguntas Frecuentes sobre Métodos de Pago de BimBam Buy",
+    "Programa de Afiliados de BimBam Buy"
+  ],
+  "evaluation_policy": {
+    "daily_gemini_call_limit": 20,
+    "estimated_calls_per_question": {
+      "typical": 3,
+      "maximum_with_one_verification_retry": 4,
+      "components": [
+        "embedding de la consulta",
+        "generación de la respuesta",
+        "verificación estructurada",
+        "reintento opcional de verificación"
+      ]
+    },
+    "recommended_max_generated_questions_per_day": 4,
+    "recommended_execution": "Ejecutar un budget_batch por día. Cada batch contiene cuatro preguntas y deja margen frente al límite diario.",
+    "avoid_forced_reindex_same_day": true,
+    "offline_validation_uses_gemini": false
+  },
+  "questions": [
+    {
+      "id": "ENV-001",
+      "question": "¿Cuánto tarda normalmente un envío a una zona de cobertura extendida?",
+      "category": "envios",
+      "evaluation_tier": "smoke",
+      "budget_batch": "A",
+      "question_type": "factual",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Guía de Tiempos y Costos de Envío de BimBam Buy"
+      ],
+      "expected_pages": [
+        3
+      ],
+      "expected_facts": [
+        "La entrega estimada en zonas de cobertura extendida es de 6 a 12 días hábiles."
+      ],
+      "forbidden_facts": [
+        "No debe prometer una fecha exacta sin validación.",
+        "No debe afirmar que todas las zonas extendidas tienen el mismo plazo garantizado."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Pregunta directa de tiempo de entrega."
+    },
+    {
+      "id": "GAR-001",
+      "question": "¿La garantía cubre daños causados por golpes, caídas o agua?",
+      "category": "garantias",
+      "evaluation_tier": "smoke",
+      "budget_batch": "A",
+      "question_type": "factual",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Manual de Garantía de Productos de BimBam Buy"
+      ],
+      "expected_pages": [
+        3
+      ],
+      "expected_facts": [
+        "La garantía normalmente no cubre daños por golpes o caídas.",
+        "La garantía normalmente no cubre daños por humedad o agua."
+      ],
+      "forbidden_facts": [
+        "No debe afirmar que esos daños siempre están cubiertos."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Evalúa exclusiones explícitas."
+    },
+    {
+      "id": "DEV-001",
+      "question": "¿Cuánto tarda un reembolso después de ser aprobado?",
+      "category": "reembolsos_devoluciones",
+      "evaluation_tier": "smoke",
+      "budget_batch": "A",
+      "question_type": "factual",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Política de Reembolsos y Devoluciones de BimBam",
+        "Preguntas Frecuentes sobre Métodos de Pago de BimBam Buy"
+      ],
+      "expected_pages": [
+        4
+      ],
+      "expected_facts": [
+        "El plazo habitual es de 5 a 10 días hábiles desde la aprobación.",
+        "El tiempo puede depender del método de pago y del país."
+      ],
+      "forbidden_facts": [
+        "No debe prometer un reembolso inmediato.",
+        "No debe afirmar que siempre tarda exactamente cinco días."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Caso ya validado manualmente durante el desarrollo."
+    },
+    {
+      "id": "PAG-001",
+      "question": "¿Qué debo revisar si mi pago fue rechazado?",
+      "category": "metodos_pago",
+      "evaluation_tier": "smoke",
+      "budget_batch": "A",
+      "question_type": "procedural",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Preguntas Frecuentes sobre Métodos de Pago de BimBam Buy"
+      ],
+      "expected_pages": [
+        3
+      ],
+      "expected_facts": [
+        "Revisar fondos disponibles.",
+        "Revisar la fecha de vencimiento de la tarjeta.",
+        "Revisar los datos ingresados.",
+        "Revisar la autorización del banco o emisor.",
+        "Si persiste, contactar a la entidad financiera o pedir revisión a soporte."
+      ],
+      "forbidden_facts": [
+        "No debe asumir fraude sin evidencia.",
+        "No debe asegurar que el rechazo fue causado por BimBam Buy."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Evalúa una respuesta de soporte accionable."
+    },
+    {
+      "id": "AFI-001",
+      "question": "¿Qué condiciones debe cumplir una compra para que pueda generar comisión al afiliado?",
+      "category": "afiliados",
+      "evaluation_tier": "smoke",
+      "budget_batch": "B",
+      "question_type": "factual",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Programa de Afiliados de BimBam Buy"
+      ],
+      "expected_pages": [
+        3,
+        4
+      ],
+      "expected_facts": [
+        "El pedido debe estar confirmado.",
+        "El pago debe estar aprobado.",
+        "No debe existir una anulación fraudulenta.",
+        "La compra debe cumplir las condiciones de atribución."
+      ],
+      "forbidden_facts": [
+        "No debe afirmar que todo clic genera comisión.",
+        "No debe inventar un porcentaje fijo de comisión."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Completa la cobertura básica de las cinco categorías."
+    },
+    {
+      "id": "ENV-002",
+      "question": "¿Quién asume el costo de corrección si el error de entrega es atribuible a BimBam Buy?",
+      "category": "envios",
+      "evaluation_tier": "standard",
+      "budget_batch": "B",
+      "question_type": "factual",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Guía de Tiempos y Costos de Envío de BimBam Buy"
+      ],
+      "expected_pages": [
+        4
+      ],
+      "expected_facts": [
+        "BimBam Buy asume el costo de corrección cuando el error es atribuible a la empresa."
+      ],
+      "forbidden_facts": [
+        "No debe trasladar automáticamente el costo al cliente."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Diferencia errores atribuibles a la empresa y al cliente."
+    },
+    {
+      "id": "GAR-002",
+      "question": "¿Qué evidencias pueden solicitar para evaluar un reclamo de garantía?",
+      "category": "garantias",
+      "evaluation_tier": "standard",
+      "budget_batch": "B",
+      "question_type": "procedural",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Manual de Garantía de Productos de BimBam Buy"
+      ],
+      "expected_pages": [
+        4,
+        5
+      ],
+      "expected_facts": [
+        "Pueden solicitar video de la falla.",
+        "Pueden solicitar fotografías del daño.",
+        "Pueden solicitar prueba de encendido o uso.",
+        "Pueden solicitar foto del serial o etiqueta.",
+        "Pueden solicitar una descripción del entorno de uso."
+      ],
+      "forbidden_facts": [
+        "No debe presentar todas las evidencias como obligatorias en todos los casos."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "La evidencia depende del producto y del caso."
+    },
+    {
+      "id": "DEV-002",
+      "question": "¿Cuál es el plazo para solicitar una devolución por retracto?",
+      "category": "reembolsos_devoluciones",
+      "evaluation_tier": "standard",
+      "budget_batch": "B",
+      "question_type": "factual",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Política de Reembolsos y Devoluciones de BimBam"
+      ],
+      "expected_pages": [
+        4
+      ],
+      "expected_facts": [
+        "El retracto puede solicitarse dentro de los 10 días corridos posteriores a la recepción.",
+        "El producto debe cumplir los requisitos de elegibilidad."
+      ],
+      "forbidden_facts": [
+        "No debe confundir días corridos con días hábiles.",
+        "No debe omitir que pueden existir ajustes por normativa local."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Evalúa precisión en unidades de tiempo."
+    },
+    {
+      "id": "PAG-002",
+      "question": "¿Qué sucede con el reembolso si pagué la compra en cuotas?",
+      "category": "metodos_pago",
+      "evaluation_tier": "standard",
+      "budget_batch": "C",
+      "question_type": "factual",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Preguntas Frecuentes sobre Métodos de Pago de BimBam Buy"
+      ],
+      "expected_pages": [
+        4
+      ],
+      "expected_facts": [
+        "El reembolso puede procesarse sobre el total o sobre la parte afectada.",
+        "La forma exacta del reverso depende del emisor y del esquema de cuotas."
+      ],
+      "forbidden_facts": [
+        "No debe prometer una forma única de reversión.",
+        "No debe afirmar que BimBam Buy controla el calendario del emisor."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Pregunta de seguimiento ya observada en la interfaz."
+    },
+    {
+      "id": "AFI-002",
+      "question": "¿Qué puede pasar con la comisión si el pedido referido termina en devolución o reembolso?",
+      "category": "afiliados",
+      "evaluation_tier": "standard",
+      "budget_batch": "C",
+      "question_type": "factual",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Programa de Afiliados de BimBam Buy"
+      ],
+      "expected_pages": [
+        5,
+        7
+      ],
+      "expected_facts": [
+        "La comisión puede ajustarse o reversarse.",
+        "La decisión depende de la política interna y de la elegibilidad final de la venta."
+      ],
+      "forbidden_facts": [
+        "No debe afirmar que toda devolución revierte automáticamente el total de la comisión."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Evalúa coordinación entre afiliados y postventa."
+    },
+    {
+      "id": "ENV-003",
+      "question": "¿Qué debe hacer soporte si un pedido supera el tiempo estimado de entrega?",
+      "category": "envios",
+      "evaluation_tier": "full",
+      "budget_batch": "C",
+      "question_type": "procedural",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Guía de Tiempos y Costos de Envío de BimBam Buy"
+      ],
+      "expected_pages": [
+        6
+      ],
+      "expected_facts": [
+        "Debe revisar el número de seguimiento.",
+        "Debe revisar el estado informado por el operador logístico.",
+        "Debe determinar si existe una demora de actualización o una incidencia real."
+      ],
+      "forbidden_facts": [
+        "No debe declarar el pedido extraviado sin investigación.",
+        "No debe prometer una compensación sin autorización."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Evalúa un procedimiento, no solo un dato."
+    },
+    {
+      "id": "GAR-003",
+      "question": "¿Cuáles son los tiempos iniciales de respuesta para un caso de garantía?",
+      "category": "garantias",
+      "evaluation_tier": "full",
+      "budget_batch": "C",
+      "question_type": "factual",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Manual de Garantía de Productos de BimBam Buy"
+      ],
+      "expected_pages": [
+        6
+      ],
+      "expected_facts": [
+        "La confirmación de recepción es de 24 horas hábiles.",
+        "La revisión inicial es de 1 a 3 días hábiles.",
+        "El diagnóstico técnico depende de la categoría y la complejidad."
+      ],
+      "forbidden_facts": [
+        "No debe convertir los tiempos orientativos en una garantía absoluta.",
+        "No debe inventar un plazo fijo para la resolución final."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Evalúa que la respuesta distinga etapas."
+    },
+    {
+      "id": "DEV-003",
+      "question": "¿Quién puede asumir el costo de devolución cuando el cliente se retracta de la compra?",
+      "category": "reembolsos_devoluciones",
+      "evaluation_tier": "full",
+      "budget_batch": "D",
+      "question_type": "factual",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Política de Reembolsos y Devoluciones de BimBam"
+      ],
+      "expected_pages": [
+        7
+      ],
+      "expected_facts": [
+        "El cliente puede asumir el costo de retorno cuando no existe error atribuible a BimBam Buy.",
+        "Esto depende de que la legislación local lo permita.",
+        "La condición debe haberse informado previamente."
+      ],
+      "forbidden_facts": [
+        "No debe afirmar que el cliente siempre paga la devolución.",
+        "No debe ignorar la normativa local."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Evalúa condiciones y excepciones."
+    },
+    {
+      "id": "PAG-003",
+      "question": "¿Puedo cambiar el método de pago después de que la orden ya fue pagada?",
+      "category": "metodos_pago",
+      "evaluation_tier": "full",
+      "budget_batch": "D",
+      "question_type": "factual",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Preguntas Frecuentes sobre Métodos de Pago de BimBam Buy"
+      ],
+      "expected_pages": [
+        6,
+        10
+      ],
+      "expected_facts": [
+        "Una orden ya pagada no puede cambiar de método de pago como regla general.",
+        "Si el pago falló, debe iniciarse una nueva transacción.",
+        "Cualquier ajuste excepcional debe ser revisado por el área de pagos."
+      ],
+      "forbidden_facts": [
+        "No debe decir que el método puede cambiarse libremente desde la cuenta."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Evalúa una regla explícita con posible excepción."
+    },
+    {
+      "id": "AFI-003",
+      "question": "¿Un afiliado puede modificar los parámetros de los enlaces o reutilizar códigos vencidos?",
+      "category": "afiliados",
+      "evaluation_tier": "full",
+      "budget_batch": "D",
+      "question_type": "factual",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Programa de Afiliados de BimBam Buy"
+      ],
+      "expected_pages": [
+        8
+      ],
+      "expected_facts": [
+        "Los enlaces y códigos deben usarse de forma exacta.",
+        "No se deben modificar parámetros.",
+        "No se deben reutilizar códigos vencidos."
+      ],
+      "forbidden_facts": [
+        "No debe sugerir que las modificaciones están permitidas si se conserva el dominio."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Evalúa cumplimiento de las reglas de atribución."
+    },
+    {
+      "id": "MUL-001",
+      "question": "El producto llegó dañado. ¿En cuánto tiempo debo reportarlo y qué tipo de solución puede corresponder?",
+      "category": "multi_document",
+      "evaluation_tier": "full",
+      "budget_batch": "D",
+      "question_type": "multi_document",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Guía de Tiempos y Costos de Envío de BimBam Buy",
+        "Manual de Garantía de Productos de BimBam Buy",
+        "Política de Reembolsos y Devoluciones de BimBam"
+      ],
+      "expected_pages": [
+        4,
+        5,
+        7
+      ],
+      "expected_facts": [
+        "El daño visible debe reportarse dentro de las 48 horas posteriores a la entrega.",
+        "Debe aportarse evidencia suficiente, como fotografías o video.",
+        "Según la causa y la evaluación, puede corresponder devolución, cambio, reemplazo o garantía.",
+        "Debe distinguirse el daño en tránsito de una falla de fábrica."
+      ],
+      "forbidden_facts": [
+        "No debe prometer reembolso automático.",
+        "No debe tratar todo daño como garantía de fabricación."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Requiere coordinar logística, garantía y devoluciones."
+    },
+    {
+      "id": "MUL-002",
+      "question": "Si una garantía termina en reembolso, ¿a qué medio vuelve el dinero y cuánto puede tardar?",
+      "category": "multi_document",
+      "evaluation_tier": "full",
+      "budget_batch": "E",
+      "question_type": "multi_document",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "expected_documents": [
+        "Manual de Garantía de Productos de BimBam Buy",
+        "Política de Reembolsos y Devoluciones de BimBam",
+        "Preguntas Frecuentes sobre Métodos de Pago de BimBam Buy"
+      ],
+      "expected_pages": [
+        4,
+        5,
+        8
+      ],
+      "expected_facts": [
+        "La garantía debe aprobar la resolución correspondiente antes del reembolso.",
+        "El reembolso normalmente vuelve al mismo medio de pago.",
+        "Puede utilizarse una alternativa si existe imposibilidad técnica, regulatoria o de conciliación.",
+        "El plazo habitual después de la aprobación es de 5 a 10 días hábiles."
+      ],
+      "forbidden_facts": [
+        "No debe afirmar que el reembolso se paga siempre en efectivo.",
+        "No debe omitir que la resolución de garantía debe estar aprobada."
+      ],
+      "should_have_answer": true,
+      "should_cite_sources": true,
+      "notes": "Evalúa recuperación y síntesis de tres documentos."
+    },
+    {
+      "id": "OUT-001",
+      "question": "¿Cuál es el número telefónico real de soporte de BimBam Buy?",
+      "category": "fuera_de_alcance",
+      "evaluation_tier": "full",
+      "budget_batch": "E",
+      "question_type": "out_of_scope",
+      "difficulty": "medium",
+      "expected_behavior": "fallback",
+      "expected_documents": [],
+      "expected_pages": [],
+      "expected_facts": [
+        "Debe indicar que los documentos no contienen un número telefónico real verificable."
+      ],
+      "forbidden_facts": [
+        "No debe inventar un número telefónico.",
+        "No debe presentar contactos sintéticos de demostración como datos reales."
+      ],
+      "should_have_answer": false,
+      "should_cite_sources": false,
+      "notes": "Evalúa el fallback y la separación de contactos ficticios."
+    },
+    {
+      "id": "OUT-002",
+      "question": "¿Qué productos están en oferta hoy en BimBam Buy?",
+      "category": "fuera_de_alcance",
+      "evaluation_tier": "full",
+      "budget_batch": "E",
+      "question_type": "out_of_scope",
+      "difficulty": "easy",
+      "expected_behavior": "fallback",
+      "expected_documents": [],
+      "expected_pages": [],
+      "expected_facts": [
+        "Debe indicar que el corpus no contiene un catálogo actualizado de ofertas."
+      ],
+      "forbidden_facts": [
+        "No debe inventar productos, precios, descuentos ni vigencias."
+      ],
+      "should_have_answer": false,
+      "should_cite_sources": false,
+      "notes": "La pregunta requiere información comercial en tiempo real."
+    },
+    {
+      "id": "OUT-003",
+      "question": "¿Cómo puedo reparar por mi cuenta una batería de litio dañada?",
+      "category": "fuera_de_alcance",
+      "evaluation_tier": "full",
+      "budget_batch": "E",
+      "question_type": "out_of_scope",
+      "difficulty": "medium",
+      "expected_behavior": "fallback",
+      "expected_documents": [],
+      "expected_pages": [],
+      "expected_facts": [
+        "Debe indicar que el corpus no ofrece instrucciones de reparación.",
+        "Puede recomendar acudir a soporte o a un servicio autorizado sin inventar procedimientos."
+      ],
+      "forbidden_facts": [
+        "No debe proporcionar un procedimiento técnico no respaldado por el corpus.",
+        "No debe citar el manual de garantía como si contuviera instrucciones de reparación."
+      ],
+      "should_have_answer": false,
+      "should_cite_sources": false,
+      "notes": "Evalúa rechazo de instrucciones no documentadas."
+    }
+  ]
+}

@@ -46,6 +46,7 @@ coverage.xml
 storage/faiss_index/
 storage/monitoring/
 storage/maintenance/
+storage/evaluation/
 
 # Mantener la carpeta storage en Git
 !storage/.gitkeep
