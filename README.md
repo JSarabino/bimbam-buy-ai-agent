@@ -19,7 +19,7 @@ Las respuestas se restringen al contexto documental recuperado y conservan traza
 
 ## Estado del proyecto
 
-**Fase actual: versión funcional preparada para validación en Docker y despliegue en Oracle Cloud Infrastructure.**
+**Fase actual: versión funcional validada localmente con Docker y preparada para despliegue en Oracle Cloud Infrastructure.**
 
 El proyecto ya permite:
 
@@ -49,6 +49,10 @@ El proyecto ya permite:
 - Mantener un banco de 20 preguntas para evaluar recuperación, generación, citas y fallback.
 - Validar el banco y simular el presupuesto sin consumir llamadas de Gemini.
 - Ejecutar evaluaciones por lotes con un límite diario protegido.
+- Construir una imagen Docker Linux reproducible.
+- Incluir y validar el índice FAISS dentro de la imagen.
+- Ejecutar Streamlit en un contenedor con variables proporcionadas en tiempo de ejecución.
+- Verificar automáticamente la salud del contenedor mediante `HEALTHCHECK`.
 - Ofrecer contactos sintéticos de demostración únicamente durante un fallback.
 
 ### Resultado actual
@@ -103,6 +107,10 @@ El proyecto ya permite:
 | Validador offline del banco | Implementado |
 | Evaluador RAG con presupuesto diario | Implementado |
 | Ejecución real de los lotes | Pendiente de cuota disponible |
+| Imagen Docker `linux/amd64` | Construida |
+| Índice FAISS incluido en la imagen | Validado |
+| Ejecución local del contenedor | Completada |
+| Healthcheck del contenedor | `healthy` |
 | Triaje y orquestación con LangGraph | Mejora futura opcional |
 | Despliegue en OCI | Pendiente |
 
@@ -112,7 +120,7 @@ El proyecto ya permite:
 - LangChain Core.
 - LangChain Google GenAI.
 - LangChain Text Splitters.
-- LangGraph, reservado para una posible mejora futura.
+- LangGraph.
 - Google Gemini.
 - PyMuPDF.
 - FAISS CPU.
@@ -412,24 +420,119 @@ storage/faiss_index/
 Este directorio debe reconstruirse después de clonar el repositorio.
 
 
-### Consideración para Docker
 
-El índice FAISS no se almacena en GitHub, pero la imagen Docker de
-despliegue puede incluir el índice generado localmente. Para ello,
-`.dockerignore` debe excluir los datos privados y los archivos de
-monitoreo, pero no `storage/faiss_index/`.
+## Ejecución y validación con Docker
 
-Antes de construir la imagen se debe verificar que existan:
+La aplicación fue construida y ejecutada correctamente como un contenedor
+Linux mediante Docker Desktop con backend WSL 2.
+
+### Resultado validado
+
+| Elemento | Resultado |
+|---|---|
+| Imagen | `bimbam-assistant:0.1.0` |
+| Plataforma | `linux/amd64` |
+| Puerto interno | `8501` |
+| Puerto local de prueba | `127.0.0.1:8501` |
+| Estado del contenedor | `running` |
+| Estado de salud | `healthy` |
+| Usuario del contenedor | `appuser` |
+| Índice FAISS incluido | Sí |
+
+El índice se incorpora durante la construcción de la imagen para evitar
+una nueva generación de embeddings al iniciar cada contenedor. La imagen
+contiene:
 
 ```text
-storage/faiss_index/index.faiss
-storage/faiss_index/documents.json
-storage/faiss_index/manifest.json
-storage/faiss_index/corpus_manifest.json
+/app/storage/faiss_index/
+├── index.faiss
+├── documents.json
+├── manifest.json
+└── corpus_manifest.json
 ```
 
-Esta estrategia evita reconstruir el índice cada vez que el contenedor
-se inicia y, por tanto, evita consumir llamadas adicionales de Gemini.
+El archivo `.env` no se copia dentro de la imagen. Las variables privadas
+se proporcionan durante la ejecución mediante `--env-file` o mediante la
+configuración segura del entorno de despliegue.
+
+### Construcción
+
+```bash
+docker build --progress=plain -t bimbam-assistant:0.1.0 .
+```
+
+La construcción se detiene si falta alguno de los archivos obligatorios
+del índice.
+
+### Verificación del índice dentro de la imagen
+
+```powershell
+docker run `
+  --rm `
+  --entrypoint sh `
+  bimbam-assistant:0.1.0 `
+  -c "test -s /app/storage/faiss_index/index.faiss &&
+      test -s /app/storage/faiss_index/documents.json &&
+      test -s /app/storage/faiss_index/manifest.json &&
+      test -s /app/storage/faiss_index/corpus_manifest.json &&
+      echo 'Índice FAISS completo'"
+```
+
+Resultado validado:
+
+```text
+Índice FAISS completo
+```
+
+### Ejecución local
+
+```powershell
+docker run `
+  -d `
+  --name bimbam-assistant-local `
+  --env-file .\.env `
+  -e APP_ENV=production `
+  -p 127.0.0.1:8501:8501 `
+  bimbam-assistant:0.1.0
+```
+
+La aplicación queda disponible en:
+
+```text
+http://localhost:8501
+```
+
+El uso de `127.0.0.1` limita esta validación al equipo local y no constituye
+todavía un despliegue público.
+
+### Verificación del estado
+
+```powershell
+docker inspect `
+  --format "{{.State.Status}} | {{if .State.Health}}{{.State.Health.Status}}{{else}}sin-healthcheck{{end}}" `
+  bimbam-assistant-local
+```
+
+Resultado obtenido:
+
+```text
+running | healthy
+```
+
+### Logs
+
+```powershell
+docker logs --tail 100 bimbam-assistant-local
+```
+
+### Detener y eliminar el contenedor local
+
+```powershell
+docker stop bimbam-assistant-local
+docker rm bimbam-assistant-local
+```
+
+La eliminación del contenedor no elimina la imagen construida.
 
 ## Generación RAG
 
@@ -602,10 +705,12 @@ reales a Gemini durante las pruebas unitarias.
 ```bash
 python -m pytest -v
 ```
+
 Resultado validado antes de la preparación del despliegue:
 
 ```text
-78 passed
+78 passed in 1.58s
+```
 
 Cobertura principal:
 
@@ -1032,14 +1137,15 @@ diario de uso de Gemini.
 
 ## Próximas etapas
 
-1. Revisar y validar `Dockerfile` y `.dockerignore`.
-2. Construir la imagen Docker en el entorno local.
-3. Ejecutar la aplicación en un contenedor local.
-4. Definir la estrategia de persistencia del índice FAISS y de los archivos de monitoreo.
-5. Desplegar BimBam Assistant en Oracle Cloud Infrastructure.
-6. Configurar el acceso público y validar la aplicación desplegada.
-7. Registrar la evidencia del despliegue en el README mediante enlace y captura.
-8. Ejecutar los lotes del banco cuando la cuota diaria de Gemini esté disponible.
+1. Seleccionar una instancia OCI compatible con `linux/amd64`.
+2. Publicar o transferir la imagen Docker al entorno de Oracle Cloud.
+3. Configurar las variables privadas sin incorporarlas a la imagen.
+4. Ejecutar el contenedor en OCI y habilitar el acceso de red requerido.
+5. Configurar persistencia para monitoreo y mantenimiento cuando aplique.
+6. Activar el mantenimiento programado mediante cron en el servidor.
+7. Validar la aplicación mediante su dirección pública.
+8. Incorporar el enlace y la evidencia visual del despliegue en este README.
+9. Ejecutar los lotes del banco cuando exista cuota suficiente de Gemini.
 
 ## Alcance actual
 
