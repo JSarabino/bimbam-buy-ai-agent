@@ -1,11 +1,18 @@
-"""Almacenamiento vectorial local mediante FAISS.
+"""Almacenamiento y búsqueda vectorial local mediante FAISS.
 
-Este módulo permite:
+Este módulo se encarga de:
 
-1. Crear un índice FAISS a partir de embeddings.
-2. Guardar el índice, los chunks y un manifiesto.
-3. Cargar un índice previamente generado.
-4. Buscar chunks mediante similitud coseno.
+1. Convertir los embeddings en matrices numéricas compatibles con FAISS.
+2. Normalizar los vectores para realizar búsquedas por similitud coseno.
+3. Crear un índice exacto de tipo IndexFlatIP.
+4. Guardar el índice, los chunks y el manifiesto asociado.
+5. Cargar y validar un índice previamente generado.
+6. Comprobar la consistencia entre vectores, documentos y metadatos.
+7. Aplicar búsquedas por similitud con top-k, umbral y filtros.
+8. Devolver resultados trazables mediante objetos SearchResult.
+
+La generación de embeddings se implementa en gemini_provider.py y la
+orquestación de la recuperación semántica en rag_service.py.
 """
 
 from __future__ import annotations

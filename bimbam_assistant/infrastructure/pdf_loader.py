@@ -2,14 +2,16 @@
 
 Este módulo se encarga de:
 
-1. Localizar los archivos PDF configurados.
-2. Extraer el texto página por página con PyMuPDF.
-3. Aplicar una limpieza conservadora al texto.
-4. Crear objetos Document de LangChain.
-5. Conservar metadatos para la citación de fuentes.
-6. Detectar páginas vacías o potencialmente escaneadas.
+1. Localizar y ordenar los archivos PDF del corpus documental.
+2. Extraer el contenido página por página mediante PyMuPDF.
+3. Aplicar una limpieza conservadora al texto recuperado.
+4. Crear objetos Document de LangChain por cada página.
+5. Asignar nombres, categorías y metadatos trazables para las citas.
+6. Identificar páginas vacías o con posible necesidad de OCR.
+7. Gestionar errores de lectura, archivos inválidos y documentos protegidos.
 
-El chunking se implementa en indexing_service.py.
+La fragmentación del contenido y la preparación de los chunks se
+implementan en indexing_service.py.
 """
 
 from __future__ import annotations

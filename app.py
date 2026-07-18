@@ -308,6 +308,64 @@ def render_global_styles() -> None:
             letter-spacing: 0.04em;
         }
 
+        .process-card {
+            height: 100%;
+            min-height: 10.2rem;
+            padding: 0.95rem;
+            border: 1px solid rgba(128, 128, 128, 0.22);
+            border-radius: 0.8rem;
+            background: rgba(128, 128, 128, 0.035);
+        }
+
+        .process-step-number {
+            width: 2rem;
+            height: 2rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 0.7rem;
+            border-radius: 999px;
+            font-size: 0.9rem;
+            font-weight: 700;
+            background: rgba(55, 125, 255, 0.13);
+        }
+
+        .process-step-title {
+            margin: 0 0 0.4rem;
+            font-size: 1rem;
+            font-weight: 650;
+        }
+
+        .process-step-description {
+            margin: 0;
+            font-size: 0.84rem;
+            line-height: 1.4;
+            opacity: 0.78;
+        }
+
+        .process-step-status {
+            display: inline-block;
+            margin-top: 0.75rem;
+            padding: 0.18rem 0.5rem;
+            border-radius: 999px;
+            font-size: 0.72rem;
+            font-weight: 650;
+        }
+
+        .process-step-ready {
+            background: rgba(35, 160, 90, 0.14);
+        }
+
+        .process-step-pending {
+            background: rgba(230, 150, 20, 0.16);
+        }
+
+        .section-introduction {
+            margin-top: -0.35rem;
+            margin-bottom: 1rem;
+            opacity: 0.78;
+        }
+
         div[data-testid="stChatMessage"] {
             padding-top: 0.55rem;
             padding-bottom: 0.55rem;
@@ -334,6 +392,166 @@ def render_compact_metric(
         ),
         unsafe_allow_html=True,
     )
+
+
+
+def render_process_step(
+    *,
+    number: int,
+    title: str,
+    description: str,
+    ready: bool,
+) -> None:
+    """Muestra una etapa del recorrido documental y conversacional."""
+
+    status_label = (
+        "Listo"
+        if ready
+        else "Pendiente"
+    )
+
+    status_class = (
+        "process-step-ready"
+        if ready
+        else "process-step-pending"
+    )
+
+    st.markdown(
+        (
+            '<div class="process-card">'
+            f'<div class="process-step-number">{number}</div>'
+            f'<p class="process-step-title">{escape(title)}</p>'
+            f'<p class="process-step-description">'
+            f'{escape(description)}</p>'
+            f'<span class="process-step-status {status_class}">'
+            f'{status_label}</span>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def render_process_overview(
+    *,
+    document_count: int,
+    page_count: int,
+    chunk_count: int,
+    vector_count: int,
+    processing_ready: bool,
+    index_ready: bool,
+    corpus_is_current: bool,
+    api_key_configured: bool,
+) -> None:
+    """Explica de forma visual cómo se prepara y responde el asistente."""
+
+    st.subheader(
+        "Cómo funciona BimBam Assistant"
+    )
+
+    st.markdown(
+        (
+            '<p class="section-introduction">'
+            "El sistema completa estas etapas antes de habilitar la "
+            "conversación y repite la recuperación, generación y "
+            "verificación para cada pregunta."
+            "</p>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    chat_ready = bool(
+        processing_ready
+        and index_ready
+        and corpus_is_current
+        and api_key_configured
+    )
+
+    steps = [
+        {
+            "title": "Carga documental",
+            "description": (
+                f"Localiza {document_count} documentos PDF y extrae "
+                f"{page_count} páginas con sus metadatos."
+            ),
+            "ready": document_count > 0,
+        },
+        {
+            "title": "Limpieza y fragmentación",
+            "description": (
+                f"Limpia el texto y genera {chunk_count} fragmentos "
+                "trazables sin mezclar páginas."
+            ),
+            "ready": processing_ready,
+        },
+        {
+            "title": "Embeddings e índice",
+            "description": (
+                f"Representa los fragmentos como vectores y mantiene "
+                f"{vector_count} registros en FAISS."
+            ),
+            "ready": index_ready,
+        },
+        {
+            "title": "Control de vigencia",
+            "description": (
+                "Compara firmas SHA-256 y evita responder cuando el "
+                "corpus cambió después de la indexación."
+            ),
+            "ready": corpus_is_current,
+        },
+        {
+            "title": "Respuesta RAG segura",
+            "description": (
+                "Recupera las fuentes más relevantes, genera la "
+                "respuesta y verifica citas y respaldo documental."
+            ),
+            "ready": bool(
+                index_ready
+                and corpus_is_current
+                and api_key_configured
+            ),
+        },
+        {
+            "title": "Conversación trazable",
+            "description": (
+                "Presenta la respuesta, sus fuentes, la verificación "
+                "y el feedback de manera independiente por pregunta."
+            ),
+            "ready": chat_ready,
+        },
+    ]
+
+    first_row = st.columns(
+        3
+    )
+
+    for index, column in enumerate(
+        first_row,
+        start=0,
+    ):
+        with column:
+            render_process_step(
+                number=index + 1,
+                **steps[
+                    index
+                ],
+            )
+
+    second_row = st.columns(
+        3
+    )
+
+    for index, column in enumerate(
+        second_row,
+        start=3,
+    ):
+        with column:
+            render_process_step(
+                number=index + 1,
+                **steps[
+                    index
+                ],
+            )
 
 
 def build_corpus_sync_snapshot(
@@ -1154,7 +1372,7 @@ def render_rag_response(
     turn_id: str,
     current_feedback: str | None,
 ) -> None:
-    """Muestra primero la respuesta y deja la trazabilidad como detalle."""
+    """Muestra la respuesta, sus fuentes y los detalles de verificación."""
 
     verification = response.verification
 
@@ -1173,9 +1391,15 @@ def render_rag_response(
         ),
     }
 
-    with st.container(border=True):
+    with st.container(
+        border=True
+    ):
         st.markdown(
-            '<div class="answer-focus-label">Respuesta de BimBam Assistant</div>',
+            (
+                '<div class="answer-focus-label">'
+                "Respuesta de BimBam Assistant"
+                "</div>"
+            ),
             unsafe_allow_html=True,
         )
 
@@ -1190,13 +1414,112 @@ def render_rag_response(
             )
         )
 
+    st.markdown(
+        "#### Fuentes utilizadas en esta respuesta"
+    )
+
+    if response.has_sources:
+        cited_sources = (
+            ", ".join(
+                f"[Fuente {source_number}]"
+                for source_number
+                in verification.cited_sources
+            )
+            if verification.cited_sources
+            else "Ninguna cita explícita"
+        )
+
+        st.caption(
+            "Las referencias incluidas en la respuesta corresponden "
+            f"a esta tabla. Fuentes citadas: {cited_sources}."
+        )
+
+        st.dataframe(
+            build_source_rows(
+                response
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        with st.expander(
+            "Consultar los fragmentos recuperados"
+        ):
+            for source_position, source in enumerate(
+                response.sources,
+                start=1,
+            ):
+                metadata = source.metadata
+
+                document_name = str(
+                    metadata.get(
+                        "document_name",
+                        "Documento desconocido",
+                    )
+                )
+
+                page_number = metadata.get(
+                    "page_number",
+                    "N/D",
+                )
+
+                category = format_category(
+                    str(
+                        metadata.get(
+                            "category",
+                            "sin_clasificar",
+                        )
+                    )
+                )
+
+                with st.container(
+                    border=True
+                ):
+                    st.markdown(
+                        (
+                            f"**Fuente {source.rank}: "
+                            f"{document_name}**"
+                        )
+                    )
+
+                    st.caption(
+                        f"Página {page_number} · "
+                        f"Categoría: {category} · "
+                        f"Similitud: {source.score:.4f}"
+                    )
+
+                    st.markdown(
+                        source.page_content
+                    )
+
+                    chunk_id = str(
+                        metadata.get(
+                            "chunk_id",
+                            f"vector-{source.vector_id}",
+                        )
+                    )
+
+                    st.caption(
+                        f"Chunk: {chunk_id}"
+                    )
+
+                if source_position < len(
+                    response.sources
+                ):
+                    st.write("")
+    else:
+        st.info(
+            "Esta respuesta no utilizó fuentes porque no se encontró "
+            "evidencia documental suficiente."
+        )
+
     render_feedback_controls(
         turn_id=turn_id,
         current_feedback=current_feedback,
     )
 
     with st.expander(
-        "Ver fuentes, verificación y detalles técnicos",
+        "Verificación y detalles técnicos",
         expanded=verification.status == "rejected",
     ):
         (
@@ -1204,12 +1527,16 @@ def render_rag_response(
             status_column,
             confidence_column,
             context_column,
-        ) = st.columns(4)
+        ) = st.columns(
+            4
+        )
 
         with source_column:
             st.metric(
-                label="Fuentes",
-                value=len(response.sources),
+                label="Fuentes recuperadas",
+                value=len(
+                    response.sources
+                ),
             )
 
         with status_column:
@@ -1256,122 +1583,45 @@ def render_rag_response(
                 "documental."
             )
 
-        with st.expander(
-            "Detalle de la verificación",
-            expanded=verification.status == "rejected",
-        ):
+        st.write(
+            {
+                "Estado": verification.status,
+                "Superó la verificación": verification.passed,
+                "Contenido respaldado": (
+                    verification.semantic_supported
+                ),
+                "Confianza": verification.confidence,
+                "Citas presentes": verification.citations_present,
+                "Fuentes citadas": verification.cited_sources,
+                "Citas inválidas": verification.invalid_citations,
+            }
+        )
+
+        st.write(
+            f"**Explicación:** {verification.explanation}"
+        )
+
+        if verification.unsupported_claims:
             st.write(
-                {
-                    "Estado": verification.status,
-                    "Superó la verificación": verification.passed,
-                    "Contenido respaldado": (
-                        verification.semantic_supported
-                    ),
-                    "Confianza": verification.confidence,
-                    "Citas presentes": verification.citations_present,
-                    "Fuentes citadas": verification.cited_sources,
-                    "Citas inválidas": verification.invalid_citations,
-                }
+                "**Afirmaciones no respaldadas:**"
             )
 
-            st.write(
-                f"**Explicación:** {verification.explanation}"
-            )
-
-            if verification.unsupported_claims:
+            for claim in verification.unsupported_claims:
                 st.write(
-                    "**Afirmaciones no respaldadas:**"
+                    f"• {claim}"
                 )
-
-                for claim in verification.unsupported_claims:
-                    st.write(
-                        f"• {claim}"
-                    )
-            else:
-                st.caption(
-                    "No se detectaron afirmaciones sin respaldo."
-                )
-
-        if response.has_sources:
-            st.markdown("#### Fuentes documentales")
-
-            st.dataframe(
-                build_source_rows(response),
-                use_container_width=True,
-                hide_index=True,
+        else:
+            st.caption(
+                "No se detectaron afirmaciones sin respaldo."
             )
 
-            for source in response.sources:
-                metadata = source.metadata
-
-                document_name = str(
-                    metadata.get(
-                        "document_name",
-                        "Documento desconocido",
-                    )
-                )
-
-                page_number = metadata.get(
-                    "page_number",
-                    "N/D",
-                )
-
-                category = format_category(
-                    str(
-                        metadata.get(
-                            "category",
-                            "sin_clasificar",
-                        )
-                    )
-                )
-
-                title = (
-                    f"Fuente {source.rank}: {document_name} · "
-                    f"página {page_number} · "
-                    f"similitud {source.score:.4f}"
-                )
-
-                with st.expander(
-                    title,
-                    expanded=False,
-                ):
-                    (
-                        page_column,
-                        category_column,
-                        score_column,
-                    ) = st.columns(3)
-
-                    with page_column:
-                        st.write(
-                            f"**Página:** {page_number}"
-                        )
-
-                    with category_column:
-                        st.write(
-                            f"**Categoría:** {category}"
-                        )
-
-                    with score_column:
-                        st.write(
-                            f"**Similitud:** {source.score:.4f}"
-                        )
-
-                    st.markdown(
-                        source.page_content
-                    )
-
-                    st.caption(
-                        "Chunk: "
-                        f"{metadata.get('chunk_id', f'vector-{source.vector_id}')}"
-                    )
-
-            with st.expander(
-                "Contexto enviado a generación y verificación"
-            ):
-                st.code(
-                    response.retrieval.context,
-                    language="text",
-                )
+        with st.expander(
+            "Contexto completo enviado a generación y verificación"
+        ):
+            st.code(
+                response.retrieval.context,
+                language="text",
+            )
 
 
 
@@ -1641,7 +1891,18 @@ def render_rag_section(
 
     initialize_conversation_state()
 
-    st.subheader("Chat documental")
+    st.subheader("Conversa con BimBam Assistant")
+
+    st.markdown(
+        (
+            '<p class="section-introduction">'
+            "Formula una pregunta sobre las políticas de BimBam Buy. "
+            "Cada respuesta conservará sus propias fuentes y su "
+            "resultado de verificación."
+            "</p>"
+        ),
+        unsafe_allow_html=True,
+    )
 
     monitoring_warning = st.session_state.pop(
         "monitoring_warning",
@@ -1929,10 +2190,10 @@ def main() -> None:
 
     st.markdown(
         """
-        La cadena RAG, la verificación automática y la interfaz
-        conversacional ya están implementadas. La aplicación también
-        comprueba que el índice FAISS esté sincronizado con el corpus antes
-        de habilitar las consultas.
+        El asistente prepara y valida el corpus documental antes de
+        habilitar la conversación. Cada consulta recupera evidencia,
+        genera una respuesta y verifica automáticamente sus citas antes
+        de presentarla.
         """
     )
 
@@ -1996,7 +2257,9 @@ def main() -> None:
     except DocumentChangeDetectionError as error:
         corpus_sync_error = str(error)
 
-    st.subheader("Estado del proyecto")
+    st.subheader(
+        "Estado general"
+    )
 
     (
         document_column,
@@ -2004,31 +2267,47 @@ def main() -> None:
         chunk_column,
         vector_column,
         index_column,
-    ) = st.columns(5)
+    ) = st.columns(
+        5
+    )
 
     with document_column:
         render_compact_metric(
             label="Documentos PDF",
-            value=len(pdf_files),
+            value=len(
+                pdf_files
+            ),
         )
 
     with page_column:
         render_compact_metric(
             label="Páginas procesadas",
-            value=int(processing["page_count"]),
+            value=int(
+                processing[
+                    "page_count"
+                ]
+            ),
         )
 
     with chunk_column:
         render_compact_metric(
             label="Chunks generados",
-            value=int(processing["chunk_count"]),
+            value=int(
+                processing[
+                    "chunk_count"
+                ]
+            ),
         )
 
     with vector_column:
         render_compact_metric(
             label="Vectores",
             value=(
-                int(index_snapshot["vector_count"])
+                int(
+                    index_snapshot[
+                        "vector_count"
+                    ]
+                )
                 if index_snapshot
                 else 0
             ),
@@ -2044,10 +2323,23 @@ def main() -> None:
             ),
         )
 
-    if bool(processing["processing_ready"]):
+    processing_ready = bool(
+        processing[
+            "processing_ready"
+        ]
+    )
+
+    corpus_is_current = bool(
+        corpus_sync_snapshot
+        and corpus_sync_snapshot[
+            "synchronized"
+        ]
+    )
+
+    if processing_ready:
         st.success(
-            "La lectura, limpieza, clasificación y fragmentación "
-            "del corpus finalizaron correctamente."
+            "El corpus fue leído, limpiado, clasificado y fragmentado "
+            "correctamente."
         )
     else:
         st.warning(
@@ -2055,16 +2347,16 @@ def main() -> None:
             "que deben revisarse."
         )
 
-    if not settings.google_api_key_configured:
+    if settings.google_api_key_configured:
+        st.success(
+            "La clave de Gemini está configurada para generar embeddings "
+            "de consulta, respuestas y verificaciones estructuradas."
+        )
+    else:
         st.warning(
             "GOOGLE_API_KEY no está configurada. El índice existente "
             "puede cargarse localmente, pero la clave es necesaria "
             "para consultar Gemini."
-        )
-    else:
-        st.info(
-            "La clave de Gemini está configurada para generar embeddings "
-            "de consulta, respuestas y verificaciones estructuradas."
         )
 
     if index_snapshot:
@@ -2084,155 +2376,258 @@ def main() -> None:
             "`python scripts/index_documents.py` para generarlo."
         )
 
-    render_corpus_sync_status(
-        corpus_sync_snapshot,
-        sync_error=corpus_sync_error,
+    render_process_overview(
+        document_count=len(
+            pdf_files
+        ),
+        page_count=int(
+            processing[
+                "page_count"
+            ]
+        ),
+        chunk_count=int(
+            processing[
+                "chunk_count"
+            ]
+        ),
+        vector_count=(
+            int(
+                index_snapshot[
+                    "vector_count"
+                ]
+            )
+            if index_snapshot
+            else 0
+        ),
+        processing_ready=processing_ready,
+        index_ready=bool(
+            index_snapshot
+        ),
+        corpus_is_current=corpus_is_current,
+        api_key_configured=settings.google_api_key_configured,
     )
 
-    st.subheader("Resumen del procesamiento")
+    st.subheader(
+        "Información técnica y control de calidad"
+    )
+
+    st.markdown(
+        (
+            '<p class="section-introduction">'
+            "Los detalles operativos se organizan en pestañas para "
+            "mantener la lectura principal compacta."
+            "</p>"
+        ),
+        unsafe_allow_html=True,
+    )
 
     (
-        empty_column,
-        ocr_column,
-        category_column,
-        size_column,
-    ) = st.columns(4)
+        synchronization_tab,
+        processing_tab,
+        index_tab,
+        monitoring_tab,
+        evaluation_tab,
+    ) = st.tabs(
+        [
+            "Sincronización",
+            "Procesamiento",
+            "Índice vectorial",
+            "Monitoreo",
+            "Evaluación RAG",
+        ]
+    )
 
-    with empty_column:
-        render_compact_metric(
-            label="Páginas vacías",
-            value=int(processing["empty_pages"]),
+    with synchronization_tab:
+        render_corpus_sync_status(
+            corpus_sync_snapshot,
+            sync_error=corpus_sync_error,
         )
 
-    with ocr_column:
-        render_compact_metric(
-            label="Candidatas a OCR",
-            value=int(processing["ocr_candidates"]),
+    with processing_tab:
+        st.markdown(
+            "### Resumen del procesamiento"
         )
 
-    with category_column:
-        render_compact_metric(
-            label="Categorías",
-            value=int(processing["category_count"]),
+        (
+            empty_column,
+            ocr_column,
+            category_column,
+            size_column,
+        ) = st.columns(
+            4
         )
 
-    with size_column:
-        render_compact_metric(
-            label="Chunk máximo",
-            value=f"{int(processing['maximum_chunk_size'])} caracteres",
+        with empty_column:
+            render_compact_metric(
+                label="Páginas vacías",
+                value=int(
+                    processing[
+                        "empty_pages"
+                    ]
+                ),
+            )
+
+        with ocr_column:
+            render_compact_metric(
+                label="Candidatas a OCR",
+                value=int(
+                    processing[
+                        "ocr_candidates"
+                    ]
+                ),
+            )
+
+        with category_column:
+            render_compact_metric(
+                label="Categorías",
+                value=int(
+                    processing[
+                        "category_count"
+                    ]
+                ),
+            )
+
+        with size_column:
+            render_compact_metric(
+                label="Chunk máximo",
+                value=(
+                    f"{int(processing['maximum_chunk_size'])} "
+                    "caracteres"
+                ),
+            )
+
+        st.markdown(
+            "#### Documentos procesados"
         )
 
-    with st.expander(
-        "Ver detalle por documento",
-        expanded=True,
-    ):
         st.dataframe(
-            processing["details"],
+            processing[
+                "details"
+            ],
             use_container_width=True,
             hide_index=True,
         )
 
-    validation_errors = processing["validation_errors"]
+        validation_errors = processing[
+            "validation_errors"
+        ]
 
-    with st.expander("Ver validaciones del procesamiento"):
-        st.write(
-            {
-                "Chunks sin identificador": validation_errors[
-                    "chunks_without_id"
-                ],
-                "Identificadores duplicados": validation_errors[
-                    "duplicated_ids"
-                ],
-                "Chunks sin fuente": validation_errors[
-                    "chunks_without_source"
-                ],
-                "Chunks sin página": validation_errors[
-                    "chunks_without_page"
-                ],
-                "Chunks sin clasificar": validation_errors[
-                    "unclassified_chunks"
-                ],
-                "Chunks que superan el tamaño": validation_errors[
-                    "oversized_chunks"
-                ],
-            }
-        )
-
-    with st.expander("Ver documentos detectados"):
-        for pdf_file in pdf_files:
+        with st.expander(
+            "Ver validaciones del procesamiento"
+        ):
             st.write(
-                f"• {pdf_file.name}"
+                {
+                    "Chunks sin identificador": validation_errors[
+                        "chunks_without_id"
+                    ],
+                    "Identificadores duplicados": validation_errors[
+                        "duplicated_ids"
+                    ],
+                    "Chunks sin fuente": validation_errors[
+                        "chunks_without_source"
+                    ],
+                    "Chunks sin página": validation_errors[
+                        "chunks_without_page"
+                    ],
+                    "Chunks sin clasificar": validation_errors[
+                        "unclassified_chunks"
+                    ],
+                    "Chunks que superan el tamaño": validation_errors[
+                        "oversized_chunks"
+                    ],
+                }
             )
 
-    st.subheader("Índice vectorial")
+        with st.expander(
+            "Ver archivos PDF detectados"
+        ):
+            for pdf_file in pdf_files:
+                st.write(
+                    f"• {pdf_file.name}"
+                )
 
-    if index_snapshot:
-        (
-            model_column,
-            dimension_column,
-            type_column,
-            metric_column,
-        ) = st.columns(4)
-
-        with model_column:
-            render_compact_metric(
-                label="Modelo de embeddings",
-                value=str(
-                    index_snapshot["embedding_model"]
-                ),
-            )
-
-        with dimension_column:
-            render_compact_metric(
-                label="Dimensión",
-                value=int(
-                    index_snapshot["embedding_dimension"]
-                ),
-            )
-
-        with type_column:
-            render_compact_metric(
-                label="Tipo de índice",
-                value=str(
-                    index_snapshot["index_type"]
-                ),
-            )
-
-        with metric_column:
-            render_compact_metric(
-                label="Métrica",
-                value=str(
-                    index_snapshot["distance_metric"]
-                ),
-            )
-
-        with st.expander("Ver manifiesto del índice"):
-            st.json(
-                index_snapshot["manifest"]
-            )
-    else:
-        st.info(
-            "El resumen vectorial aparecerá después de generar "
-            "y validar el índice."
+    with index_tab:
+        st.markdown(
+            "### Índice vectorial"
         )
+
+        if index_snapshot:
+            (
+                model_column,
+                dimension_column,
+                type_column,
+                metric_column,
+            ) = st.columns(
+                4
+            )
+
+            with model_column:
+                render_compact_metric(
+                    label="Modelo de embeddings",
+                    value=str(
+                        index_snapshot[
+                            "embedding_model"
+                        ]
+                    ),
+                )
+
+            with dimension_column:
+                render_compact_metric(
+                    label="Dimensión",
+                    value=int(
+                        index_snapshot[
+                            "embedding_dimension"
+                        ]
+                    ),
+                )
+
+            with type_column:
+                render_compact_metric(
+                    label="Tipo de índice",
+                    value=str(
+                        index_snapshot[
+                            "index_type"
+                        ]
+                    ),
+                )
+
+            with metric_column:
+                render_compact_metric(
+                    label="Métrica",
+                    value=str(
+                        index_snapshot[
+                            "distance_metric"
+                        ]
+                    ),
+                )
+
+            with st.expander(
+                "Ver manifiesto del índice"
+            ):
+                st.json(
+                    index_snapshot[
+                        "manifest"
+                    ]
+                )
+        else:
+            st.info(
+                "El resumen vectorial aparecerá después de generar "
+                "y validar el índice."
+            )
+
+    with monitoring_tab:
+        render_quality_monitoring()
+
+    with evaluation_tab:
+        render_evaluation_bank_status()
+
+    st.divider()
 
     render_rag_section(
         index_snapshot=index_snapshot,
-        corpus_is_current=bool(
-            corpus_sync_snapshot
-            and corpus_sync_snapshot["synchronized"]
-        ),
+        corpus_is_current=corpus_is_current,
     )
 
-    render_quality_monitoring()
-
-    render_evaluation_bank_status()
-
-    st.caption(
-        "Siguiente hito: implementar el triaje y la orquestación del "
-        "agente con LangGraph. Las evaluaciones reales se ejecutarán "
-        "por lotes cuando la cuota de Gemini esté disponible."
-    )
 
 
 if __name__ == "__main__":

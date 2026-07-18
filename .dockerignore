@@ -1,52 +1,76 @@
+# ==========================================================
 # Control de versiones
-.git
-.gitignore
+# ==========================================================
+.git/
 .github/
+.gitignore
 
+# ==========================================================
 # Entornos virtuales
+# ==========================================================
 .venv/
+.venv-*/
 venv/
 env/
 ENV/
 
+# ==========================================================
 # Variables privadas
+# ==========================================================
 .env
 .env.*
 !.env.example
 
-# Python
+# ==========================================================
+# Python, pruebas y cobertura
+# ==========================================================
 __pycache__/
 *.py[cod]
 *.so
 *.egg-info/
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
+tests/
 
-# Editores
+# ==========================================================
+# Editores y notebooks
+# ==========================================================
 .vscode/
 .idea/
-
-# Jupyter
 .ipynb_checkpoints/
 notebooks/
 
-# Pruebas
-tests/
+# ==========================================================
+# Datos locales generados en ejecución
+# ==========================================================
+storage/monitoring/
+storage/maintenance/
+storage/evaluation/
 
-# Índice local generado
-storage/faiss_index/
+# IMPORTANTE:
+# storage/faiss_index/ NO se excluye.
+# El índice preconstruido debe incluirse dentro de la imagen.
 
-# Documentación que no necesita la aplicación
+# ==========================================================
+# Documentación y archivos auxiliares
+# ==========================================================
 docs/
+project_structure*.txt
 
+# ==========================================================
 # Logs y temporales
+# ==========================================================
 logs/
 *.log
 tmp/
 temp/
+*.tmp
 
+# ==========================================================
 # Sistema operativo
+# ==========================================================
 .DS_Store
 Thumbs.db
 desktop.ini

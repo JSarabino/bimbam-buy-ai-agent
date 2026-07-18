@@ -1,11 +1,22 @@
 """Servicio de preparación e indexación documental.
 
-Este módulo coordina:
+Este módulo coordina el proceso que transforma las páginas extraídas
+del corpus en un índice vectorial consultable y se encarga de:
 
-1. La fragmentación de las páginas extraídas.
-2. La validación de los chunks.
-3. La generación de embeddings con Gemini.
-4. La creación y persistencia del índice FAISS.
+1. Construir y validar la configuración de fragmentación.
+2. Dividir cada página en chunks sin mezclar contenido entre páginas.
+3. Conservar y ampliar los metadatos necesarios para la trazabilidad.
+4. Omitir páginas vacías y descartar fragmentos sin contenido.
+5. Generar identificadores únicos para cada chunk.
+6. Validar que los chunks estén listos para la indexación.
+7. Generar embeddings mediante Google Gemini.
+8. Verificar la correspondencia entre chunks y vectores.
+9. Crear y persistir el índice FAISS y su manifiesto.
+10. Devolver un resumen estructurado del proceso de indexación.
+
+La carga de documentos se implementa en pdf_loader.py, la generación de
+embeddings en gemini_provider.py y la persistencia vectorial en
+faiss_store.py.
 """
 
 from __future__ import annotations

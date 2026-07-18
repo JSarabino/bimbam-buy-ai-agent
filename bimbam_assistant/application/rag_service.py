@@ -1,16 +1,15 @@
-"""Servicio de recuperación semántica de BimBam Assistant.
+"""Servicio de recuperación y generación RAG de BimBam Assistant.
 
 Este módulo se encarga de:
 
 1. Validar y normalizar la pregunta.
-2. Generar su embedding con Gemini.
+2. Generar el embedding de la consulta con Gemini.
 3. Consultar el índice FAISS.
 4. Aplicar top-k, umbral y filtros.
-5. Convertir los resultados en modelos de dominio.
-6. Ensamblar el contexto para la futura cadena RAG.
-
-La generación de la respuesta con un modelo de chat se incorporará
-posteriormente.
+5. Construir el contexto documental trazable.
+6. Generar una respuesta fundamentada.
+7. Verificar automáticamente la respuesta y sus citas.
+8. Aplicar un fallback seguro cuando no existe evidencia suficiente.
 """
 
 from __future__ import annotations
@@ -18,11 +17,20 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 
+from bimbam_assistant.application.verification_service import (
+    VerificationError,
+    verify_answer,
+)
 from bimbam_assistant.core.config import get_settings
 from bimbam_assistant.domain.models import (
+    AnswerVerification,
     RagResponse,
     RetrievedChunk,
     RetrievalResponse,
+    SupportContact,
+)
+from bimbam_assistant.domain.support_contacts import (
+    get_demo_support_contact,
 )
 from bimbam_assistant.infrastructure.faiss_store import (
     FaissStoreError,
@@ -36,20 +44,6 @@ from bimbam_assistant.infrastructure.gemini_provider import (
     embed_query,
     generate_text,
 )
-from bimbam_assistant.application.verification_service import (
-    VerificationError,
-    verify_answer,
-)
-from bimbam_assistant.domain.models import (
-    AnswerVerification,
-    RagResponse,
-    RetrievedChunk,
-    RetrievalResponse,
-    SupportContact,
-)
-from bimbam_assistant.domain.support_contacts import (
-    get_demo_support_contact,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +52,10 @@ UNVERIFIED_ANSWER = (
     "esté completamente respaldada por los documentos disponibles."
 )
 
+
 class RetrievalError(RuntimeError):
     """Error producido durante la recuperación semántica."""
+
 
 class RagGenerationError(RuntimeError):
     """Error producido durante la generación de la respuesta RAG."""
@@ -238,6 +234,7 @@ def answer_question(
         verification=verification,
         support_contact=None,
     )
+
 
 def normalize_query(query: str) -> str:
     """Limpia y valida una pregunta antes de procesarla."""
@@ -465,6 +462,7 @@ def resolve_support_contact(
         if category
         else None
     )
+
 
 def append_demo_contact(
     message: str,

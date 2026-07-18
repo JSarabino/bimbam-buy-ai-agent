@@ -19,7 +19,7 @@ Las respuestas se restringen al contexto documental recuperado y conservan traza
 
 ## Estado del proyecto
 
-**Fase actual: RAG conversacional, verificación, monitoreo, mantenimiento documental y banco de evaluación controlado completados.**
+**Fase actual: versión funcional preparada para validación en Docker y despliegue en Oracle Cloud Infrastructure.**
 
 El proyecto ya permite:
 
@@ -103,7 +103,7 @@ El proyecto ya permite:
 | Validador offline del banco | Implementado |
 | Evaluador RAG con presupuesto diario | Implementado |
 | Ejecución real de los lotes | Pendiente de cuota disponible |
-| Agente con LangGraph | Siguiente hito |
+| Triaje y orquestación con LangGraph | Mejora futura opcional |
 | Despliegue en OCI | Pendiente |
 
 ## Tecnologías
@@ -112,7 +112,7 @@ El proyecto ya permite:
 - LangChain Core.
 - LangChain Google GenAI.
 - LangChain Text Splitters.
-- LangGraph.
+- LangGraph, reservado para una posible mejora futura.
 - Google Gemini.
 - PyMuPDF.
 - FAISS CPU.
@@ -132,7 +132,7 @@ El proyecto ya permite:
 | `domain` | Modelos de recuperación, respuesta, verificación y contactos |
 | `application` | Indexación, recuperación, generación y verificación |
 | `infrastructure` | Integraciones con PDF, Gemini, FAISS, SQLite y detección de cambios documentales |
-| `presentation` | Interfaz conversacional en Streamlit |
+| `app.py` | Interfaz conversacional, sincronización documental y paneles de monitoreo en Streamlit |
 
 ### Flujo completo
 
@@ -188,58 +188,148 @@ Los documentos mencionan áreas y canales generales de atención, pero no contie
 
 ```text
 bimbam-buy-ai-agent/
-├── .env
+├── .dockerignore
 ├── .env.example
 ├── .gitignore
-├── .dockerignore
+├── app.py
+├── Dockerfile
 ├── README.md
 ├── requirements.txt
-├── Dockerfile
-├── app.py
+├── bimbam_assistant/
+│   ├── __init__.py
+│   ├── application/
+│   │   ├── __init__.py
+│   │   ├── agent_service.py
+│   │   ├── indexing_service.py
+│   │   ├── rag_service.py
+│   │   └── verification_service.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   └── config.py
+│   ├── domain/
+│   │   ├── __init__.py
+│   │   ├── models.py
+│   │   └── support_contacts.py
+│   └── infrastructure/
+│       ├── __init__.py
+│       ├── document_change_detector.py
+│       ├── faiss_store.py
+│       ├── gemini_provider.py
+│       ├── monitoring_repository.py
+│       └── pdf_loader.py
 ├── data/
 │   ├── documents/
+│   │   ├── Guía de Tiempos y Costos de Envío de BimBam Buy.pdf
+│   │   ├── Manual de Garantía de Productos de BimBam Buy.pdf
+│   │   ├── Política de Reembolsos y Devoluciones de BimBam.pdf
+│   │   ├── Preguntas Frecuentes sobre Métodos de Pago de BimBam Buy.pdf
+│   │   └── Programa de Afiliados de BimBam Buy.pdf
 │   └── evaluation/
 │       └── questions.json
-├── notebooks/
-│   └── Curso_Agentes_de_IA_y_RAG.ipynb
 ├── scripts/
-│   └── index_documents.py
+│   ├── evaluate_rag.py
+│   ├── index_documents.py
+│   ├── install_linux_cron.sh
+│   ├── install_windows_index_task.ps1
+│   ├── run_index_maintenance.ps1
+│   ├── run_index_maintenance.sh
+│   └── validate_evaluation_bank.py
 ├── storage/
 │   ├── .gitkeep
 │   ├── faiss_index/
-│   │   ├── index.faiss
-│   │   ├── documents.json
-│   │   └── manifest.json
+│   ├── maintenance/
 │   └── monitoring/
-│       └── bimbam_quality.db
-├── bimbam_assistant/
-│   ├── core/
-│   │   └── config.py
-│   ├── domain/
-│   │   ├── models.py
-│   │   └── support_contacts.py
-│   ├── application/
-│   │   ├── indexing_service.py
-│   │   ├── rag_service.py
-│   │   ├── verification_service.py
-│   │   └── agent_service.py
-│   ├── infrastructure/
-│   │   ├── pdf_loader.py
-│   │   ├── gemini_provider.py
-│   │   ├── faiss_store.py
-│   │   ├── monitoring_repository.py
-│   │   └── document_change_detector.py
-│   └── presentation/
-│       └── streamlit_app.py
 └── tests/
+    ├── test_chunking.py
+    ├── test_document_change_detector.py
+    ├── test_evaluate_rag.py
+    ├── test_evaluation_bank.py
+    ├── test_index_documents_conditional.py
     ├── test_pdf_loader.py
-    ├── test_retrieval.py
     ├── test_rag_service.py
-    ├── test_verification_retry.py
-    └── test_document_change_detector.py
+    ├── test_retrieval.py
+    └── test_verification_retry.py
 ```
 
-Los directorios `storage/faiss_index/` y `storage/monitoring/` se generan localmente y no deben almacenarse en GitHub.
+Los archivos `__init__.py` se mantienen vacíos de forma intencional para
+identificar los paquetes de Python. La interfaz se ejecuta directamente
+desde `app.py`; por esta razón, ya no existe una carpeta `presentation/`.
+El notebook utilizado durante el aprendizaje tampoco forma parte de la
+versión final del repositorio.
+
+### Archivos versionados y archivos generados
+
+Los documentos del corpus, el banco de evaluación, el código fuente, las
+pruebas y los scripts se almacenan en GitHub. En cambio, los secretos,
+índices, bases de datos, logs y resultados de ejecución se generan
+localmente y permanecen excluidos mediante `.gitignore`.
+
+| Ruta | Cómo se obtiene | Contenido principal | ¿Se almacena en Git? |
+|---|---|---|---|
+| `.env` | Se crea copiando `.env.example` | Clave de Gemini y configuración privada | No |
+| `storage/faiss_index/` | `python scripts/index_documents.py` | `index.faiss`, `documents.json`, `manifest.json` y `corpus_manifest.json` | No |
+| `storage/monitoring/` | La aplicación Streamlit la crea al registrar interacciones | `bimbam_quality.db` | No |
+| `storage/maintenance/` | Los scripts de mantenimiento la crean al ejecutarse | Logs de indexación y mantenimiento | No |
+| `storage/evaluation/` | `evaluate_rag.py --execute` la crea en la primera evaluación real | Presupuesto diario y resultados de los lotes | No |
+| `__pycache__/` y `.pytest_cache/` | Python y Pytest las crean automáticamente | Cachés temporales | No |
+
+La carpeta raíz `storage/` se conserva en el repositorio mediante
+`storage/.gitkeep`. Sus subcarpetas pueden existir vacías antes de la
+primera ejecución. En particular, `storage/evaluation/` no aparece hasta
+que se ejecuta una evaluación real.
+
+#### Contenido generado en `storage/faiss_index/`
+
+```text
+storage/faiss_index/
+├── index.faiss
+├── documents.json
+├── manifest.json
+└── corpus_manifest.json
+```
+
+- `index.faiss`: vectores normalizados para la búsqueda semántica.
+- `documents.json`: chunks y metadatos asociados a cada vector.
+- `manifest.json`: modelo, dimensión, cantidad de vectores y parámetros.
+- `corpus_manifest.json`: firmas SHA-256 utilizadas para detectar cambios.
+
+#### Contenido generado en `storage/monitoring/`
+
+```text
+storage/monitoring/
+└── bimbam_quality.db
+```
+
+La base SQLite se crea durante la ejecución de Streamlit cuando el sistema
+registra interacciones, errores, tiempos o feedback.
+
+#### Contenido generado en `storage/maintenance/`
+
+```text
+storage/maintenance/
+└── *.log
+```
+
+Los archivos de log se generan cuando se ejecutan los scripts de
+mantenimiento manual o programado. Sus nombres pueden variar según el
+script y la fecha de ejecución.
+
+#### Contenido generado en `storage/evaluation/`
+
+```text
+storage/evaluation/
+├── gemini_budget.json
+└── runs/
+    └── rag-evaluation-<modo>-<fecha>/
+        ├── results.jsonl
+        ├── summary.csv
+        └── summary.json
+```
+
+Esta carpeta se crea únicamente al ejecutar una evaluación real con
+`--execute`. Las simulaciones de presupuesto y las validaciones offline
+no generan llamadas a Gemini.
+
 
 ## Instalación local
 
@@ -315,10 +405,31 @@ El índice se guarda localmente en:
 storage/faiss_index/
 ├── index.faiss
 ├── documents.json
-└── manifest.json
+├── manifest.json
+└── corpus_manifest.json
 ```
 
 Este directorio debe reconstruirse después de clonar el repositorio.
+
+
+### Consideración para Docker
+
+El índice FAISS no se almacena en GitHub, pero la imagen Docker de
+despliegue puede incluir el índice generado localmente. Para ello,
+`.dockerignore` debe excluir los datos privados y los archivos de
+monitoreo, pero no `storage/faiss_index/`.
+
+Antes de construir la imagen se debe verificar que existan:
+
+```text
+storage/faiss_index/index.faiss
+storage/faiss_index/documents.json
+storage/faiss_index/manifest.json
+storage/faiss_index/corpus_manifest.json
+```
+
+Esta estrategia evita reconstruir el índice cada vez que el contenedor
+se inicia y, por tanto, evita consumir llamadas adicionales de Gemini.
 
 ## Generación RAG
 
@@ -482,6 +593,35 @@ Resultado validado:
 4 passed
 ```
 
+
+## Pruebas automáticas
+
+La suite utiliza Pytest y cubre el flujo principal sin realizar llamadas
+reales a Gemini durante las pruebas unitarias.
+
+```bash
+python -m pytest -v
+```
+Resultado validado antes de la preparación del despliegue:
+
+```text
+78 passed
+
+Cobertura principal:
+
+- Limpieza, localización y extracción de documentos PDF.
+- Fragmentación, metadatos y validación de chunks.
+- Recuperación semántica, filtros, umbral y construcción del contexto.
+- Generación RAG, verificación aprobada, rechazo y fallback.
+- Reintentos transitorios del verificador.
+- Detección de cambios documentales.
+- Indexación condicional y opción `--force`.
+- Validación del banco de evaluación.
+- Simulación y control preventivo del presupuesto diario.
+
+Los tests reemplazan embeddings, generación y verificación mediante
+mocks, por lo que no consumen la cuota de Gemini.
+
 ## Detección de cambios documentales
 
 El módulo:
@@ -509,7 +649,7 @@ deleted
 unchanged
 ```
 
-El manifiesto esperado se almacenará en:
+El manifiesto del corpus se almacena en:
 
 ```text
 storage/faiss_index/corpus_manifest.json
@@ -548,7 +688,7 @@ Resultado validado:
 
 El detector está integrado con `scripts/index_documents.py`. La indexación se omite cuando el corpus no cambia y puede forzarse con `--force`.
 
-El siguiente paso será:
+El flujo implementado es:
 
 ```text
 calcular hashes
@@ -614,11 +754,13 @@ El historial visual del chat se conserva durante la sesión actual de Streamlit.
 
 Las métricas y el feedback se conservan en SQLite después de cerrar la aplicación. Debido a que pueden incluir preguntas y respuestas, la base local no debe subirse a GitHub.
 
-Agregar en `.gitignore`:
+Las siguientes rutas se mantienen excluidas mediante `.gitignore`:
 
 ```gitignore
 storage/faiss_index/
 storage/monitoring/
+storage/maintenance/
+storage/evaluation/
 ```
 
 Verificar:
@@ -626,6 +768,8 @@ Verificar:
 ```powershell
 git check-ignore storage/faiss_index/index.faiss
 git check-ignore storage/monitoring/bimbam_quality.db
+git check-ignore storage/maintenance/index-maintenance.log
+git check-ignore storage/evaluation/gemini_budget.json
 ```
 
 ## Fallback y contactos sintéticos
@@ -863,16 +1007,39 @@ no se han ejecutado todavía para conservar la cuota diaria disponible.
 - Las evaluaciones reales del banco siguen pendientes de una ventana con cuota suficiente.
 - El reranking todavía no forma parte del baseline.
 
+
+## Mejoras futuras opcionales
+
+Una evolución posible consiste en incorporar LangGraph para representar
+el flujo como un grafo de estados con triaje, rutas condicionales y
+orquestación de herramientas.
+
+Esta mejora no forma parte de los requisitos obligatorios del Challenge.
+El sistema actual ya funciona como un agente RAG documental capaz de:
+
+- Recuperar evidencia semántica desde FAISS.
+- Generar respuestas fundamentadas con Gemini.
+- Verificar citas y respaldo documental.
+- Rechazar respuestas no sustentadas.
+- Activar un fallback controlado.
+- Bloquear consultas cuando el índice está desactualizado.
+
+Un triaje basado en LLM añadiría al menos una llamada adicional por
+consulta, por lo que se mantiene como mejora futura debido al límite
+diario de uso de Gemini.
+
+`bimbam_assistant/application/agent_service.py` se conserva como punto de extensión para una futura orquestación con LangGraph. No forma parte del flujo obligatorio de la versión actual.
+
 ## Próximas etapas
 
-1. Implementar el triaje y la orquestación del agente con LangGraph.
-2. Integrar el agente con la interfaz Streamlit sin duplicar la lógica RAG.
-3. Ejecutar los lotes del banco cuando la cuota diaria de Gemini esté disponible.
-4. Analizar precisión de recuperación, citas, verificación, fallback y latencia.
-5. Ajustar el umbral, la confianza mínima y decidir si se necesita reranking.
-6. Construir y probar Docker.
-7. Desplegar en OCI Compute.
-8. Activar el cron de mantenimiento en OCI.
+1. Revisar y validar `Dockerfile` y `.dockerignore`.
+2. Construir la imagen Docker en el entorno local.
+3. Ejecutar la aplicación en un contenedor local.
+4. Definir la estrategia de persistencia del índice FAISS y de los archivos de monitoreo.
+5. Desplegar BimBam Assistant en Oracle Cloud Infrastructure.
+6. Configurar el acceso público y validar la aplicación desplegada.
+7. Registrar la evidencia del despliegue en el README mediante enlace y captura.
+8. Ejecutar los lotes del banco cuando la cuota diaria de Gemini esté disponible.
 
 ## Alcance actual
 

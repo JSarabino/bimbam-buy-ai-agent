@@ -1,12 +1,17 @@
 """Configuración central de BimBam Assistant.
 
-Este módulo:
+Este módulo se encarga de:
 
-1. Localiza la raíz del proyecto.
-2. Carga las variables del archivo .env.
-3. Convierte las rutas relativas en rutas absolutas.
-4. Convierte los valores numéricos al tipo correcto.
-5. Valida configuraciones básicas.
+1. Localizar la raíz del proyecto.
+2. Cargar variables desde el archivo .env sin sobrescribir las definidas
+   por Docker, OCI o el sistema operativo.
+3. Leer y normalizar la configuración general de la aplicación.
+4. Resolver rutas relativas como rutas absolutas dentro del proyecto.
+5. Convertir variables numéricas a los tipos correspondientes.
+6. Validar los parámetros de fragmentación y recuperación.
+7. Verificar la disponibilidad de la clave de Gemini.
+8. Comprobar la existencia de los documentos y del índice FAISS requerido.
+9. Exponer la configuración mediante una instancia reutilizable de Settings.
 """
 
 from __future__ import annotations

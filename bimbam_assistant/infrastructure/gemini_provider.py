@@ -1,14 +1,19 @@
-"""Proveedor de embeddings de Google Gemini.
+"""Proveedor de inteligencia artificial de Google Gemini.
 
-Este módulo se encarga exclusivamente de:
+Este módulo centraliza la integración de BimBam Assistant con Gemini
+y se encarga de:
 
-1. Crear el cliente de embeddings.
-2. Obtener la configuración central del proyecto.
-3. Generar embeddings para documentos.
-4. Generar embeddings para consultas.
-5. Validar las respuestas recibidas del proveedor.
+1. Crear y reutilizar los clientes de embeddings y chat.
+2. Obtener los modelos, la clave y los parámetros desde la configuración.
+3. Generar embeddings para documentos y consultas.
+4. Generar respuestas de texto para la cadena RAG.
+5. Generar respuestas estructuradas validadas mediante modelos Pydantic.
+6. Validar la cantidad, dimensión y contenido de las respuestas recibidas.
+7. Procesar embeddings por lotes y controlar reintentos ante límites de uso.
+8. Traducir los errores del proveedor a excepciones propias de la aplicación.
 
-La creación y persistencia del índice vectorial se implementa en faiss_store.py.
+La creación, persistencia y consulta del índice vectorial se implementan
+en faiss_store.py.
 """
 
 from __future__ import annotations
