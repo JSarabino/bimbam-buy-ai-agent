@@ -19,7 +19,7 @@ Las respuestas se restringen al contexto documental recuperado y conservan traza
 
 ## Estado del proyecto
 
-**Fase actual: versión funcional validada localmente con Docker y preparada para despliegue en Oracle Cloud Infrastructure.**
+**Fase actual: versión funcional desplegada y validada públicamente en Oracle Cloud Infrastructure mediante Docker.**
 
 El proyecto ya permite:
 
@@ -53,6 +53,11 @@ El proyecto ya permite:
 - Incluir y validar el índice FAISS dentro de la imagen.
 - Ejecutar Streamlit en un contenedor con variables proporcionadas en tiempo de ejecución.
 - Verificar automáticamente la salud del contenedor mediante `HEALTHCHECK`.
+- Desplegar la imagen `linux/amd64` en Oracle Cloud Infrastructure.
+- Publicar Streamlit mediante una dirección IPv4 y el puerto `8501`.
+- Reiniciar automáticamente Docker y el contenedor después de reiniciar la instancia.
+- Conservar configuración y datos de ejecución mediante montajes persistentes en `/opt/bimbam`.
+- Restringir el acceso SSH mediante un Network Security Group.
 - Ofrecer contactos sintéticos de demostración únicamente durante un fallback.
 
 ### Resultado actual
@@ -102,7 +107,7 @@ El proyecto ya permite:
 | Bloqueo del chat con índice desactualizado | Implementado |
 | Ejecutor programable para Windows | Implementado y probado |
 | Preparación de cron para Linux/OCI | Implementada |
-| Activación de cron en OCI | Pendiente del despliegue |
+| Activación de cron en OCI | Opcional; no activada en el despliegue temporal |
 | Banco de evaluación de 20 preguntas | Implementado |
 | Validador offline del banco | Implementado |
 | Evaluador RAG con presupuesto diario | Implementado |
@@ -111,8 +116,11 @@ El proyecto ya permite:
 | Índice FAISS incluido en la imagen | Validado |
 | Ejecución local del contenedor | Completada |
 | Healthcheck del contenedor | `healthy` |
+| Persistencia de producción en `/opt/bimbam` | Configurada |
+| Reinicio automático tras reiniciar la instancia | Validado |
+| Acceso SSH restringido mediante NSG | Configurado |
 | Triaje y orquestación con LangGraph | Mejora futura opcional |
-| Despliegue en OCI | Pendiente |
+| Despliegue en OCI | Completado y validado públicamente |
 
 ## Tecnologías
 
@@ -234,6 +242,12 @@ bimbam-buy-ai-agent/
 │   │   └── Programa de Afiliados de BimBam Buy.pdf
 │   └── evaluation/
 │       └── questions.json
+├── docs/
+│   └── images/
+│       ├── app-publica-oci.png
+│       ├── respuesta-rag-oci.png
+│       ├── instancia-oci-running.png
+│       └── docker-healthy-oci.png
 ├── scripts/
 │   ├── evaluate_rag.py
 │   ├── index_documents.py
@@ -268,12 +282,13 @@ versión final del repositorio.
 ### Archivos versionados y archivos generados
 
 Los documentos del corpus, el banco de evaluación, el código fuente, las
-pruebas y los scripts se almacenan en GitHub. En cambio, los secretos,
+pruebas, los scripts y las evidencias visuales de `docs/images/` se almacenan en GitHub. En cambio, los secretos,
 índices, bases de datos, logs y resultados de ejecución se generan
 localmente y permanecen excluidos mediante `.gitignore`.
 
 | Ruta | Cómo se obtiene | Contenido principal | ¿Se almacena en Git? |
 |---|---|---|---|
+| `docs/images/` | Capturas obtenidas durante la validación del despliegue | Evidencias de OCI, Docker y la aplicación pública | Sí |
 | `.env` | Se crea copiando `.env.example` | Clave de Gemini y configuración privada | No |
 | `storage/faiss_index/` | `python scripts/index_documents.py` | `index.faiss`, `documents.json`, `manifest.json` y `corpus_manifest.json` | No |
 | `storage/monitoring/` | La aplicación Streamlit la crea al registrar interacciones | `bimbam_quality.db` | No |
@@ -533,6 +548,109 @@ docker rm bimbam-assistant-local
 ```
 
 La eliminación del contenedor no elimina la imagen construida.
+
+
+## Despliegue en Oracle Cloud Infrastructure
+
+BimBam Assistant fue desplegado en una instancia de Oracle Cloud
+Infrastructure mediante la misma imagen Docker validada localmente.
+
+### Entorno de producción
+
+| Elemento | Configuración |
+|---|---|
+| Proveedor | Oracle Cloud Infrastructure |
+| Región | Colombia Central (Bogotá) |
+| Instancia | `bimbam-assistant-prod-e5` |
+| Sistema operativo | Ubuntu 24.04 LTS |
+| Shape | `VM.Standard.E5.Flex` |
+| Recursos asignados | 1 OCPU, 12 GB de RAM |
+| Procesadores visibles en Linux | 2 |
+| Arquitectura | `x86_64` / `linux/amd64` |
+| Imagen Docker | `bimbam-assistant:0.1.0` |
+| Puerto publicado | `8501` |
+| Estado validado | `running / healthy` |
+| Política de reinicio | `unless-stopped` |
+
+La aplicación se encuentra disponible durante el periodo de evaluación en:
+
+```text
+http://149.130.174.8:8501
+```
+
+La dirección utiliza HTTP sin certificado TLS, por lo que el navegador
+puede mostrar la indicación **No seguro**. La IP corresponde a una
+dirección pública de la instancia y su disponibilidad depende de que el
+recurso permanezca encendido durante el periodo de evaluación.
+
+### Persistencia y configuración
+
+La imagen contiene el código, las dependencias y el índice FAISS inicial.
+La configuración privada y los datos generados se conservan fuera del
+contenedor:
+
+```text
+/opt/bimbam/
+├── config/
+│   └── bimbam.env
+├── monitoring/
+├── maintenance/
+└── evaluation/
+```
+
+Los montajes utilizados son:
+
+```text
+/opt/bimbam/monitoring   → /app/storage/monitoring
+/opt/bimbam/maintenance  → /app/storage/maintenance
+/opt/bimbam/evaluation   → /app/storage/evaluation
+```
+
+El archivo `bimbam.env` tiene permisos restringidos y no se almacena en
+GitHub. El contenedor fue configurado con `--restart unless-stopped`, por
+lo que Docker y la aplicación se recuperaron automáticamente después de
+reiniciar la instancia.
+
+### Red y acceso
+
+- El puerto `8501` está habilitado públicamente para acceder a Streamlit.
+- El puerto `22` está restringido a una dirección IPv4 autorizada mediante un Network Security Group.
+- Se eliminó la regla general que permitía SSH desde `0.0.0.0/0`.
+- La administración del servidor se realiza mediante SSH y VS Code Remote SSH.
+
+### Evidencias del despliegue
+
+#### Aplicación pública y respuesta verificada
+
+![Aplicación pública de BimBam Assistant en OCI](docs/images/app-publica-oci.png)
+
+#### Fuentes y fragmentos recuperados
+
+![Fuentes y fragmentos recuperados por el sistema RAG](docs/images/respuesta-rag-oci.png)
+
+#### Instancia de Oracle Cloud en ejecución
+
+![Instancia OCI en estado Running](docs/images/instancia-oci-running.png)
+
+#### Salud del contenedor y recursos del servidor
+
+![Contenedor Docker healthy y recursos de OCI](docs/images/docker-healthy-oci.png)
+
+### Operación básica
+
+```bash
+# Estado del contenedor
+docker ps
+
+# Estado y healthcheck
+docker inspect   --format='Estado={{.State.Status}} Salud={{.State.Health.Status}} Reinicio={{.HostConfig.RestartPolicy.Name}}'   bimbam-assistant
+
+# Logs recientes
+docker logs --tail 100 bimbam-assistant
+
+# Reiniciar la aplicación
+docker restart bimbam-assistant
+```
 
 ## Generación RAG
 
@@ -1005,7 +1123,9 @@ local, por lo que la capacidad está implementada pero no permanece
 activa en ese computador.
 
 Los scripts de Linux están preparados para activar el mantenimiento
-periódico mediante cron cuando el proyecto se despliegue en OCI.
+periódico mediante cron. En el despliegue temporal de OCI no se dejó una
+tarea cron activa, porque el corpus y el índice FAISS están incluidos en
+la imagen validada y no se modifican durante el periodo de evaluación.
 
 
 ## Banco de evaluación RAG
@@ -1107,10 +1227,12 @@ no se han ejecutado todavía para conservar la cuota diaria disponible.
 - La verificación con otro LLM reduce el riesgo, pero no constituye una garantía matemática.
 - Cada verificación agrega latencia y consumo de API.
 - El historial completo no se restaura entre sesiones.
-- El mantenimiento puede ejecutarse manualmente o programarse; el cron de OCI se activará durante el despliegue.
+- El mantenimiento puede ejecutarse manualmente o programarse; el cron de OCI no se dejó activo en este despliegue temporal.
 - El contador de evaluación solo conoce las llamadas reservadas por `evaluate_rag.py`; no puede observar consumos realizados desde Streamlit, la indexación u otros scripts.
 - Las evaluaciones reales del banco siguen pendientes de una ventana con cuota suficiente.
 - El reranking todavía no forma parte del baseline.
+- El despliegue público utiliza HTTP sin TLS.
+- La dirección pública estará disponible únicamente mientras la instancia OCI permanezca encendida durante el periodo de evaluación.
 
 
 ## Mejoras futuras opcionales
@@ -1137,15 +1259,12 @@ diario de uso de Gemini.
 
 ## Próximas etapas
 
-1. Seleccionar una instancia OCI compatible con `linux/amd64`.
-2. Publicar o transferir la imagen Docker al entorno de Oracle Cloud.
-3. Configurar las variables privadas sin incorporarlas a la imagen.
-4. Ejecutar el contenedor en OCI y habilitar el acceso de red requerido.
-5. Configurar persistencia para monitoreo y mantenimiento cuando aplique.
-6. Activar el mantenimiento programado mediante cron en el servidor.
-7. Validar la aplicación mediante su dirección pública.
-8. Incorporar el enlace y la evidencia visual del despliegue en este README.
-9. Ejecutar los lotes del banco cuando exista cuota suficiente de Gemini.
+1. Mantener la instancia y el contenedor disponibles durante el periodo de evaluación.
+2. Supervisar periódicamente el estado `running / healthy`.
+3. Ejecutar los lotes del banco cuando exista cuota suficiente de Gemini.
+4. Evaluar un dominio y HTTPS si el proyecto evoluciona hacia un servicio permanente.
+5. Activar cron únicamente si el corpus documental cambia en producción.
+6. Terminar la instancia y eliminar su volumen de arranque al concluir la evaluación para detener el consumo de recursos.
 
 ## Alcance actual
 
@@ -1166,6 +1285,13 @@ Banco de evaluación
   → validación offline
   → simulación de presupuesto
   → ejecución controlada por lotes
+
+Despliegue
+  → imagen Docker `linux/amd64`
+  → instancia OCI con Ubuntu 24.04
+  → Streamlit público en el puerto 8501
+  → persistencia en `/opt/bimbam`
+  → reinicio automático validado
 ```
 
 ## Autor
