@@ -98,7 +98,7 @@ El proyecto ya permite:
 | Feedback por respuesta | Implementado |
 | Persistencia SQLite | Implementada |
 | Monitoreo de calidad | Implementado |
-| Reranking | Pendiente de evaluación |
+| Reranking | Mejora futura opcional |
 | Detección de cambios por SHA-256 | Implementada |
 | Integración del detector con la indexación | Implementada |
 | Omisión de indexación cuando no hay cambios | Implementada |
@@ -111,7 +111,7 @@ El proyecto ya permite:
 | Banco de evaluación de 20 preguntas | Implementado |
 | Validador offline del banco | Implementado |
 | Evaluador RAG con presupuesto diario | Implementado |
-| Ejecución real de los lotes | Pendiente de cuota disponible |
+| Ejecución real de los lotes | Opcional; evaluador preparado y validado offline |
 | Imagen Docker `linux/amd64` | Construida |
 | Índice FAISS incluido en la imagen | Validado |
 | Ejecución local del contenedor | Completada |
@@ -1213,8 +1213,10 @@ añadiría otra llamada de Gemini por pregunta.
 ### Estado de ejecución
 
 La estructura del banco, el validador, las pruebas offline, el planificador
-y el contador preventivo ya están implementados. Las evaluaciones reales
-no se han ejecutado todavía para conservar la cuota diaria disponible.
+y el contador preventivo ya están implementados. La ejecución real de los
+lotes es opcional y no forma parte del despliegue de la aplicación. Puede
+realizarse localmente o mediante la misma imagen Docker para obtener métricas
+adicionales, teniendo en cuenta que consume la cuota diaria de Gemini.
 
 ## Seguridad y limitaciones
 
@@ -1254,6 +1256,11 @@ El sistema actual ya funciona como un agente RAG documental capaz de:
 Un triaje basado en LLM añadiría al menos una llamada adicional por
 consulta, por lo que se mantiene como mejora futura debido al límite
 diario de uso de Gemini.
+
+El reranking también se conserva como mejora futura opcional. Su propósito
+sería reordenar los fragmentos recuperados antes de construir el contexto,
+pero el baseline actual ya recupera evidencia suficiente mediante FAISS,
+`top k`, umbral de similitud y filtros.
 
 `bimbam_assistant/application/agent_service.py` se conserva como punto de extensión para una futura orquestación con LangGraph. No forma parte del flujo obligatorio de la versión actual.
 
@@ -1296,4 +1303,4 @@ Despliegue
 
 ## Autor
 
-Proyecto desarrollado como desafío final de formación en agentes de inteligencia artificial y recuperación aumentada por generación.
+Proyecto desarrollado por **Juan Camilo Sarabino** como desafío final de formación en agentes de inteligencia artificial y recuperación aumentada por generación.
